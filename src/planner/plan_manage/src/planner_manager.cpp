@@ -432,18 +432,21 @@ namespace ego_planner
   {
     double t_inc;
 
-    Eigen::MatrixXd ctrl_pts; // = traj.getControlPoint()
+    Eigen::MatrixXd ctrl_pts;
 
-    // std::cout << "ratio: " << ratio << std::endl;
     reparamBspline(traj, start_end_derivative, ratio, ctrl_pts, ts, t_inc);
 
     traj = UniformBspline(ctrl_pts, 3, ts);
 
-    // double t_step = traj.getTimeSum() / (ctrl_pts.cols() - 3);
-    double t_step = traj.getInterval();
+    // 为贝塞尔曲线生成参考点：数量必须与控制点数量一致
+    int num_ctrl_pts = ctrl_pts.cols();
     bspline_optimizer_rebound_->ref_pts_.clear();
-    for (double t = 0; t < traj.getTimeSum() + 1e-4; t += t_step)
-      bspline_optimizer_rebound_->ref_pts_.push_back(traj.evaluateDeBoorT(t));
+    bspline_optimizer_rebound_->ref_pts_.resize(num_ctrl_pts);
+    
+    // 直接使用当前控制点作为参考点
+    for (int i = 0; i < num_ctrl_pts; ++i) {
+        bspline_optimizer_rebound_->ref_pts_[i] = ctrl_pts.col(i);
+    }
 
     bool success = bspline_optimizer_rebound_->BsplineOptimizeTrajRefine(ctrl_pts, ts, optimal_control_points);
 

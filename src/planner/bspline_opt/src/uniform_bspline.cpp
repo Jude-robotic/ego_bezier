@@ -210,43 +210,84 @@ namespace ego_planner
       interval_ *= ratio;
   }
 
+  /**
+   * @brief 将路径点转换为分段贝塞尔曲线控制点
+   * @param ts 每段贝塞尔曲线的时间间隔
+   * @param point_set 路径点集合（K个点）
+   * @param start_end_derivative 起始和终止的速度/加速度约束
+   *        [0]: start_vel, [1]: end_vel, [2]: start_acc (可选), [3]: end_acc (可选)
+   * @param ctrl_pts 输出控制点矩阵 (3 x (3*(K-1)+1))
+   * 
+   * 说明：
+   * - K个路径点生成K-1段三次贝塞尔曲线
+   * - 需要 3*(K-1)+1 = 3*N+1 个控制点
+   * - 保证C1连续性（位置和速度连续）
+   * 
+   * 贝塞尔曲线性质：
+   * - 起点速度 V(0) = 3*(P1 - P0) / T
+   * - 终点速度 V(T) = 3*(P3 - P2) / T
+   * - 因此 P1 = P0 + V*T/3, P2 = P3 - V*T/3
+   */
   void UniformBspline::parameterizeToBspline(const double &ts, const vector<Eigen::Vector3d> &point_set,
                                              const vector<Eigen::Vector3d> &start_end_derivative,
                                              Eigen::MatrixXd &ctrl_pts)
   {
     if (point_set.size() < 2) return;
 
-    int K = point_set.size();
-    int num_segments = K - 1;
-    int num_ctrl_pts = num_segments * 3 + 1;
+    int K = point_set.size();           // 路径点数量
+    int num_segments = K - 1;           // 贝塞尔曲线段数
+    int num_ctrl_pts = num_segments * 3 + 1;  // 控制点数量
 
     ctrl_pts.resize(3, num_ctrl_pts);
 
+    // Step 1: 设置所有连接点 (P0, P3, P6, ..., P_{3N})
+    // 这些是贝塞尔曲线段的端点，也是路径点
     for (int i = 0; i < K; ++i) {
-        // Junction points
         ctrl_pts.col(i * 3) = point_set[i];
     }
 
-    // Compute tangents for C1 continuity
+    // Step 2: 计算每个连接点的切向量（速度）
+    // 这些切向量用于设置P1和P2控制点
+    std::vector<Eigen::Vector3d> tangents(K);
+    
     for (int i = 0; i < K; ++i) {
-        Eigen::Vector3d tangent;
         if (i == 0) {
-            tangent = (point_set[1] - point_set[0]); 
-            if (start_end_derivative.size() >= 2) tangent = start_end_derivative[1]; 
+            // 起点：使用给定的起始速度，否则用差分估计
+            if (start_end_derivative.size() >= 1 && start_end_derivative[0].norm() > 1e-6) {
+                tangents[i] = start_end_derivative[0];
+            } else {
+                tangents[i] = (point_set[1] - point_set[0]) / ts;
+            }
         } else if (i == K - 1) {
-            tangent = (point_set[K-1] - point_set[K-2]);
-            if (start_end_derivative.size() >= 4) tangent = start_end_derivative[3]; 
+            // 终点：使用给定的终止速度，否则用差分估计
+            if (start_end_derivative.size() >= 2 && start_end_derivative[1].norm() > 1e-6) {
+                tangents[i] = start_end_derivative[1];
+            } else {
+                tangents[i] = (point_set[K-1] - point_set[K-2]) / ts;
+            }
         } else {
-            tangent = 0.5 * (point_set[i+1] - point_set[i-1]);
-        }
-
-        if (i < num_segments) {
-            ctrl_pts.col(i * 3 + 1) = point_set[i] + tangent * ts / 3.0;
-        }
-        if (i > 0) {
-            ctrl_pts.col(i * 3 - 1) = point_set[i] - tangent * ts / 3.0;
+            // 中间点：使用两侧差分的平均作为切向量
+            Eigen::Vector3d v_prev = (point_set[i] - point_set[i-1]) / ts;
+            Eigen::Vector3d v_next = (point_set[i+1] - point_set[i]) / ts;
+            tangents[i] = 0.5 * (v_prev + v_next);
         }
     }
+
+    // Step 3: 设置每段的中间控制点 P1 和 P2
+    // 对于第k段 (控制点 P_{3k}, P_{3k+1}, P_{3k+2}, P_{3k+3}):
+    //   P_{3k+1} = P_{3k} + tangent[k] * ts / 3     (保证起点速度)
+    //   P_{3k+2} = P_{3k+3} - tangent[k+1] * ts / 3 (保证终点速度)
+    for (int k = 0; k < num_segments; ++k) {
+        int idx = k * 3;
+        // P1: 从起点沿切向量方向偏移 ts/3
+        ctrl_pts.col(idx + 1) = ctrl_pts.col(idx) + tangents[k] * ts / 3.0;
+        // P2: 从终点沿切向量反方向偏移 ts/3
+        ctrl_pts.col(idx + 2) = ctrl_pts.col(idx + 3) - tangents[k + 1] * ts / 3.0;
+    }
+    
+    // Debug输出
+    ROS_DEBUG_STREAM("[Bezier Parameterize] K=" << K << ", segments=" << num_segments 
+                    << ", ctrl_pts=" << num_ctrl_pts);
   }
 
   double UniformBspline::getTimeSum()
