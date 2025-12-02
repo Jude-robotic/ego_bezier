@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.3)
-project(bspline_opt)
+project(bezier_opt)
 
 set(CMAKE_BUILD_TYPE "Release")
 ADD_COMPILE_OPTIONS(-std=c++11 )
@@ -21,9 +21,8 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_package(
  INCLUDE_DIRS include
- LIBRARIES bspline_opt
+ LIBRARIES bezier_opt
  CATKIN_DEPENDS plan_env
-#  DEPENDS system_lib
 )
 
 include_directories( 
@@ -34,14 +33,14 @@ include_directories(
     ${PCL_INCLUDE_DIRS}
 )
 
-add_library( bspline_opt 
-    src/uniform_bspline.cpp 
-    src/bspline_optimizer.cpp 
+add_library(bezier_opt 
+    src/piecewise_bezier.cpp 
+    src/bezier_optimizer.cpp 
     src/gradient_descent_optimizer.cpp
-    )
-target_link_libraries( bspline_opt
+)
+target_link_libraries(bezier_opt
     ${catkin_LIBRARIES} 
-    )  
+)
 
 add_executable(test_bezier src/test_bezier.cpp)
-target_link_libraries(test_bezier bspline_opt ${catkin_LIBRARIES})
+target_link_libraries(test_bezier bezier_opt ${catkin_LIBRARIES})

@@ -1,11 +1,13 @@
-// #include <fstream>
+/**
+ * @file planner_manager.cpp
+ * @brief Implementation of EGO Planner Manager with Piecewise Bezier Curves
+ */
+
 #include <plan_manage/planner_manager.h>
 #include <thread>
 
 namespace ego_planner
 {
-
-  // SECTION interfaces for setup and query
 
   EGOPlannerManager::EGOPlannerManager() {}
 
@@ -13,8 +15,7 @@ namespace ego_planner
 
   void EGOPlannerManager::initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis)
   {
-    /* read algorithm parameters */
-
+    /* Read algorithm parameters */
     nh.param("manager/max_vel", pp_.max_vel_, -1.0);
     nh.param("manager/max_acc", pp_.max_acc_, -1.0);
     nh.param("manager/max_jerk", pp_.max_jerk_, -1.0);
@@ -26,30 +27,24 @@ namespace ego_planner
     grid_map_.reset(new GridMap);
     grid_map_->initMap(nh);
 
-    bspline_optimizer_rebound_.reset(new BsplineOptimizer);
-    bspline_optimizer_rebound_->setParam(nh);
-    bspline_optimizer_rebound_->setEnvironment(grid_map_);
-    bspline_optimizer_rebound_->a_star_.reset(new AStar);
-    bspline_optimizer_rebound_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
+    bezier_optimizer_rebound_.reset(new BezierOptimizer);
+    bezier_optimizer_rebound_->setParam(nh);
+    bezier_optimizer_rebound_->setEnvironment(grid_map_);
+    bezier_optimizer_rebound_->a_star_.reset(new AStar);
+    bezier_optimizer_rebound_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
 
     visualization_ = vis;
   }
-
-  // !SECTION
-
-  // SECTION rebond replanning
 
   bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
                                         Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
                                         Eigen::Vector3d local_target_vel, bool flag_polyInit, bool flag_randomPolyTraj)
   {
-
     static int count = 0;
-    std::cout << endl
-              << "[rebo replan]: -------------------------------------" << count++ << std::endl;
+    std::cout << endl << "[Bezier replan]: -------------------------------------" << count++ << std::endl;
     cout.precision(3);
-    cout << "start: " << start_pt.transpose() << ", " << start_vel.transpose() << "\ngoal:" << local_target_pt.transpose() << ", " << local_target_vel.transpose()
-         << endl;
+    cout << "start: " << start_pt.transpose() << ", " << start_vel.transpose() 
+         << "\ngoal:" << local_target_pt.transpose() << ", " << local_target_vel.transpose() << endl;
 
     if ((start_pt - local_target_pt).norm() < 0.2)
     {
@@ -62,37 +57,45 @@ namespace ego_planner
     ros::Duration t_init, t_opt, t_refine;
 
     /*** STEP 1: INIT ***/
-    double ts = (start_pt - local_target_pt).norm() > 0.1 ? pp_.ctrl_pt_dist / pp_.max_vel_ * 1.2 : pp_.ctrl_pt_dist / pp_.max_vel_ * 5; // pp_.ctrl_pt_dist / pp_.max_vel_ is too tense, and will surely exceed the acc/vel limits
+    double ts = (start_pt - local_target_pt).norm() > 0.1 
+                ? pp_.ctrl_pt_dist / pp_.max_vel_ * 1.2 
+                : pp_.ctrl_pt_dist / pp_.max_vel_ * 5;
+    
     vector<Eigen::Vector3d> point_set, start_end_derivatives;
     static bool flag_first_call = true, flag_force_polynomial = false;
     bool flag_regenerate = false;
+    
     do
     {
       point_set.clear();
       start_end_derivatives.clear();
       flag_regenerate = false;
 
-      if (flag_first_call || flag_polyInit || flag_force_polynomial /*|| ( start_pt - local_target_pt ).norm() < 1.0*/) // Initial path generated from a min-snap traj by order.
+      if (flag_first_call || flag_polyInit || flag_force_polynomial)
       {
         flag_first_call = false;
         flag_force_polynomial = false;
 
         PolynomialTraj gl_traj;
-
         double dist = (start_pt - local_target_pt).norm();
-        double time = pow(pp_.max_vel_, 2) / pp_.max_acc_ > dist ? sqrt(dist / pp_.max_acc_) : (dist - pow(pp_.max_vel_, 2) / pp_.max_acc_) / pp_.max_vel_ + 2 * pp_.max_vel_ / pp_.max_acc_;
+        double time = pow(pp_.max_vel_, 2) / pp_.max_acc_ > dist 
+                      ? sqrt(dist / pp_.max_acc_) 
+                      : (dist - pow(pp_.max_vel_, 2) / pp_.max_acc_) / pp_.max_vel_ + 2 * pp_.max_vel_ / pp_.max_acc_;
 
         if (!flag_randomPolyTraj)
         {
-          gl_traj = PolynomialTraj::one_segment_traj_gen(start_pt, start_vel, start_acc, local_target_pt, local_target_vel, Eigen::Vector3d::Zero(), time);
+          gl_traj = PolynomialTraj::one_segment_traj_gen(start_pt, start_vel, start_acc, 
+                                                         local_target_pt, local_target_vel, 
+                                                         Eigen::Vector3d::Zero(), time);
         }
         else
         {
           Eigen::Vector3d horizen_dir = ((start_pt - local_target_pt).cross(Eigen::Vector3d(0, 0, 1))).normalized();
           Eigen::Vector3d vertical_dir = ((start_pt - local_target_pt).cross(horizen_dir)).normalized();
           Eigen::Vector3d random_inserted_pt = (start_pt + local_target_pt) / 2 +
-                                               (((double)rand()) / RAND_MAX - 0.5) * (start_pt - local_target_pt).norm() * horizen_dir * 0.8 * (-0.978 / (continous_failures_count_ + 0.989) + 0.989) +
-                                               (((double)rand()) / RAND_MAX - 0.5) * (start_pt - local_target_pt).norm() * vertical_dir * 0.4 * (-0.978 / (continous_failures_count_ + 0.989) + 0.989);
+              (((double)rand()) / RAND_MAX - 0.5) * (start_pt - local_target_pt).norm() * horizen_dir * 0.8 * (-0.978 / (continous_failures_count_ + 0.989) + 0.989) +
+              (((double)rand()) / RAND_MAX - 0.5) * (start_pt - local_target_pt).norm() * vertical_dir * 0.4 * (-0.978 / (continous_failures_count_ + 0.989) + 0.989);
+          
           Eigen::MatrixXd pos(3, 3);
           pos.col(0) = start_pt;
           pos.col(1) = random_inserted_pt;
@@ -104,7 +107,7 @@ namespace ego_planner
 
         double t;
         bool flag_too_far;
-        ts *= 1.5; // ts will be divided by 1.5 in the next
+        ts *= 1.5;
         do
         {
           ts /= 1.5;
@@ -122,16 +125,15 @@ namespace ego_planner
             last_pt = pt;
             point_set.push_back(pt);
           }
-        } while (flag_too_far || point_set.size() < 7); // To make sure the initial path has enough points.
+        } while (flag_too_far || point_set.size() < 7);
         t -= ts;
         start_end_derivatives.push_back(gl_traj.evaluateVel(0));
         start_end_derivatives.push_back(local_target_vel);
         start_end_derivatives.push_back(gl_traj.evaluateAcc(0));
         start_end_derivatives.push_back(gl_traj.evaluateAcc(t));
       }
-      else // Initial path generated from previous trajectory.
+      else
       {
-
         double t;
         double t_cur = (ros::Time::now() - local_data_.start_time_).toSec();
 
@@ -140,7 +142,7 @@ namespace ego_planner
         pseudo_arc_length.push_back(0.0);
         for (t = t_cur; t < local_data_.duration_ + 1e-3; t += ts)
         {
-          segment_point.push_back(local_data_.position_traj_.evaluateDeBoorT(t));
+          segment_point.push_back(local_data_.position_traj_.evaluateT(t));
           if (t > t_cur)
           {
             pseudo_arc_length.push_back((segment_point.back() - segment_point[segment_point.size() - 2]).norm() + pseudo_arc_length.back());
@@ -148,13 +150,14 @@ namespace ego_planner
         }
         t -= ts;
 
-        double poly_time = (local_data_.position_traj_.evaluateDeBoorT(t) - local_target_pt).norm() / pp_.max_vel_ * 2;
+        double poly_time = (local_data_.position_traj_.evaluateT(t) - local_target_pt).norm() / pp_.max_vel_ * 2;
         if (poly_time > ts)
         {
-          PolynomialTraj gl_traj = PolynomialTraj::one_segment_traj_gen(local_data_.position_traj_.evaluateDeBoorT(t),
-                                                                        local_data_.velocity_traj_.evaluateDeBoorT(t),
-                                                                        local_data_.acceleration_traj_.evaluateDeBoorT(t),
-                                                                        local_target_pt, local_target_vel, Eigen::Vector3d::Zero(), poly_time);
+          PolynomialTraj gl_traj = PolynomialTraj::one_segment_traj_gen(
+              local_data_.position_traj_.evaluateT(t),
+              local_data_.velocity_traj_.evaluateT(t),
+              local_data_.acceleration_traj_.evaluateT(t),
+              local_target_pt, local_target_vel, Eigen::Vector3d::Zero(), poly_time);
 
           for (t = ts; t < poly_time; t += ts)
           {
@@ -173,7 +176,7 @@ namespace ego_planner
         }
 
         double sample_length = 0;
-        double cps_dist = pp_.ctrl_pt_dist * 1.5; // cps_dist will be divided by 1.5 in the next
+        double cps_dist = pp_.ctrl_pt_dist * 1.5;
         size_t id = 0;
         do
         {
@@ -193,14 +196,14 @@ namespace ego_planner
               id++;
           }
           point_set.push_back(local_target_pt);
-        } while (point_set.size() < 7); // If the start point is very close to end point, this will help
+        } while (point_set.size() < 7);
 
-        start_end_derivatives.push_back(local_data_.velocity_traj_.evaluateDeBoorT(t_cur));
+        start_end_derivatives.push_back(local_data_.velocity_traj_.evaluateT(t_cur));
         start_end_derivatives.push_back(local_target_vel);
-        start_end_derivatives.push_back(local_data_.acceleration_traj_.evaluateDeBoorT(t_cur));
+        start_end_derivatives.push_back(local_data_.acceleration_traj_.evaluateT(t_cur));
         start_end_derivatives.push_back(Eigen::Vector3d::Zero());
 
-        if (point_set.size() > pp_.planning_horizen_ / pp_.ctrl_pt_dist * 3) // The initial path is unnormally too long!
+        if (point_set.size() > pp_.planning_horizen_ / pp_.ctrl_pt_dist * 3)
         {
           flag_force_polynomial = true;
           flag_regenerate = true;
@@ -209,10 +212,10 @@ namespace ego_planner
     } while (flag_regenerate);
 
     Eigen::MatrixXd ctrl_pts;
-    UniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
+    PiecewiseBezier::parameterizeToBezier(ts, point_set, start_end_derivatives, ctrl_pts);
 
     vector<vector<Eigen::Vector3d>> a_star_pathes;
-    a_star_pathes = bspline_optimizer_rebound_->initControlPoints(ctrl_pts, true);
+    a_star_pathes = bezier_optimizer_rebound_->initControlPoints(ctrl_pts, true);
 
     t_init = ros::Time::now() - t_start;
 
@@ -223,21 +226,19 @@ namespace ego_planner
     t_start = ros::Time::now();
 
     /*** STEP 2: OPTIMIZE ***/
-    bool flag_step_1_success = bspline_optimizer_rebound_->BsplineOptimizeTrajRebound(ctrl_pts, ts);
+    bool flag_step_1_success = bezier_optimizer_rebound_->BezierOptimizeTrajRebound(ctrl_pts, ts);
     cout << "first_optimize_step_success=" << flag_step_1_success << endl;
     if (!flag_step_1_success)
     {
-      // visualization_->displayOptimalList( ctrl_pts, vis_id );
       continous_failures_count_++;
       return false;
     }
-    //visualization_->displayOptimalList( ctrl_pts, vis_id );
 
     t_opt = ros::Time::now() - t_start;
     t_start = ros::Time::now();
 
-    /*** STEP 3: REFINE(RE-ALLOCATE TIME) IF NECESSARY ***/
-    UniformBspline pos = UniformBspline(ctrl_pts, 3, ts);
+    /*** STEP 3: REFINE (RE-ALLOCATE TIME) IF NECESSARY ***/
+    PiecewiseBezier pos = PiecewiseBezier(ctrl_pts, 3, ts);
     pos.setPhysicalLimits(pp_.max_vel_, pp_.max_acc_, pp_.feasibility_tolerance_);
 
     double ratio;
@@ -249,24 +250,23 @@ namespace ego_planner
       Eigen::MatrixXd optimal_control_points;
       flag_step_2_success = refineTrajAlgo(pos, start_end_derivatives, ratio, ts, optimal_control_points);
       if (flag_step_2_success)
-        pos = UniformBspline(optimal_control_points, 3, ts);
+        pos = PiecewiseBezier(optimal_control_points, 3, ts);
     }
 
     if (!flag_step_2_success)
     {
-      printf("\033[34mThis refined trajectory hits obstacles. It doesn't matter if appeares occasionally. But if continously appearing, Increase parameter \"lambda_fitness\".\n\033[0m");
+      printf("\033[34mThis refined trajectory hits obstacles. It doesn't matter if appears occasionally. But if continuously appearing, Increase parameter \"lambda_fitness\".\n\033[0m");
       continous_failures_count_++;
       return false;
     }
 
     t_refine = ros::Time::now() - t_start;
 
-    // save planned results
+    // Save planned results
     updateTrajInfo(pos, ros::Time::now());
 
     cout << "total time:\033[42m" << (t_init + t_opt + t_refine).toSec() << "\033[0m,optimize:" << (t_init + t_opt).toSec() << ",refine:" << t_refine.toSec() << endl;
 
-    // success. YoY
     continous_failures_count_ = 0;
     return true;
   }
@@ -279,7 +279,7 @@ namespace ego_planner
       control_points.col(i) = stop_pos;
     }
 
-    updateTrajInfo(UniformBspline(control_points, 3, 1.0), ros::Time::now());
+    updateTrajInfo(PiecewiseBezier(control_points, 3, 1.0), ros::Time::now());
 
     return true;
   }
@@ -287,9 +287,6 @@ namespace ego_planner
   bool EGOPlannerManager::planGlobalTrajWaypoints(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                                   const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
   {
-
-    // generate global reference trajectory
-
     vector<Eigen::Vector3d> points;
     points.push_back(start_pos);
 
@@ -305,7 +302,6 @@ namespace ego_planner
       total_len += (waypoints[i + 1] - waypoints[i]).norm();
     }
 
-    // insert intermediate points if too far
     vector<Eigen::Vector3d> inter_points;
     double dist_thresh = max(total_len / 8, 4.0);
 
@@ -317,11 +313,9 @@ namespace ego_planner
       if (dist > dist_thresh)
       {
         int id_num = floor(dist / dist_thresh) + 1;
-
         for (int j = 1; j < id_num; ++j)
         {
-          Eigen::Vector3d inter_pt =
-              points.at(i) * (1.0 - double(j) / id_num) + points.at(i + 1) * double(j) / id_num;
+          Eigen::Vector3d inter_pt = points.at(i) * (1.0 - double(j) / id_num) + points.at(i + 1) * double(j) / id_num;
           inter_points.push_back(inter_pt);
         }
       }
@@ -329,12 +323,6 @@ namespace ego_planner
 
     inter_points.push_back(points.back());
 
-    // for ( int i=0; i<inter_points.size(); i++ )
-    // {
-    //   cout << inter_points[i].transpose() << endl;
-    // }
-
-    // write position matrix
     int pt_num = inter_points.size();
     Eigen::MatrixXd pos(3, pt_num);
     for (int i = 0; i < pt_num; ++i)
@@ -367,14 +355,10 @@ namespace ego_planner
   bool EGOPlannerManager::planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                          const Eigen::Vector3d &end_pos, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
   {
-
-    // generate global reference trajectory
-
     vector<Eigen::Vector3d> points;
     points.push_back(start_pos);
     points.push_back(end_pos);
 
-    // insert intermediate points if too far
     vector<Eigen::Vector3d> inter_points;
     const double dist_thresh = 4.0;
 
@@ -386,11 +370,9 @@ namespace ego_planner
       if (dist > dist_thresh)
       {
         int id_num = floor(dist / dist_thresh) + 1;
-
         for (int j = 1; j < id_num; ++j)
         {
-          Eigen::Vector3d inter_pt =
-              points.at(i) * (1.0 - double(j) / id_num) + points.at(i + 1) * double(j) / id_num;
+          Eigen::Vector3d inter_pt = points.at(i) * (1.0 - double(j) / id_num) + points.at(i + 1) * double(j) / id_num;
           inter_points.push_back(inter_pt);
         }
       }
@@ -398,7 +380,6 @@ namespace ego_planner
 
     inter_points.push_back(points.back());
 
-    // write position matrix
     int pt_num = inter_points.size();
     Eigen::MatrixXd pos(3, pt_num);
     for (int i = 0; i < pt_num; ++i)
@@ -428,62 +409,58 @@ namespace ego_planner
     return true;
   }
 
-  bool EGOPlannerManager::refineTrajAlgo(UniformBspline &traj, vector<Eigen::Vector3d> &start_end_derivative, double ratio, double &ts, Eigen::MatrixXd &optimal_control_points)
+  bool EGOPlannerManager::refineTrajAlgo(PiecewiseBezier &traj, vector<Eigen::Vector3d> &start_end_derivative, 
+                                         double ratio, double &ts, Eigen::MatrixXd &optimal_control_points)
   {
     double t_inc;
-
     Eigen::MatrixXd ctrl_pts;
 
-    reparamBspline(traj, start_end_derivative, ratio, ctrl_pts, ts, t_inc);
+    reparamBezier(traj, start_end_derivative, ratio, ctrl_pts, ts, t_inc);
 
-    traj = UniformBspline(ctrl_pts, 3, ts);
+    traj = PiecewiseBezier(ctrl_pts, 3, ts);
 
-    // 为贝塞尔曲线生成参考点：数量必须与控制点数量一致
+    // Generate reference points for Bezier curve (must match control point count)
     int num_ctrl_pts = ctrl_pts.cols();
-    bspline_optimizer_rebound_->ref_pts_.clear();
-    bspline_optimizer_rebound_->ref_pts_.resize(num_ctrl_pts);
-    
-    // 直接使用当前控制点作为参考点
+    bezier_optimizer_rebound_->ref_pts_.clear();
+    bezier_optimizer_rebound_->ref_pts_.resize(num_ctrl_pts);
+
     for (int i = 0; i < num_ctrl_pts; ++i) {
-        bspline_optimizer_rebound_->ref_pts_[i] = ctrl_pts.col(i);
+      bezier_optimizer_rebound_->ref_pts_[i] = ctrl_pts.col(i);
     }
 
-    bool success = bspline_optimizer_rebound_->BsplineOptimizeTrajRefine(ctrl_pts, ts, optimal_control_points);
+    bool success = bezier_optimizer_rebound_->BezierOptimizeTrajRefine(ctrl_pts, ts, optimal_control_points);
 
     return success;
   }
 
-  void EGOPlannerManager::updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now)
+  void EGOPlannerManager::updateTrajInfo(const PiecewiseBezier &position_traj, const ros::Time time_now)
   {
     local_data_.start_time_ = time_now;
     local_data_.position_traj_ = position_traj;
     local_data_.velocity_traj_ = local_data_.position_traj_.getDerivative();
     local_data_.acceleration_traj_ = local_data_.velocity_traj_.getDerivative();
-    local_data_.start_pos_ = local_data_.position_traj_.evaluateDeBoorT(0.0);
+    local_data_.start_pos_ = local_data_.position_traj_.evaluateT(0.0);
     local_data_.duration_ = local_data_.position_traj_.getTimeSum();
     local_data_.traj_id_ += 1;
   }
 
-  void EGOPlannerManager::reparamBspline(UniformBspline &bspline, vector<Eigen::Vector3d> &start_end_derivative, double ratio,
-                                         Eigen::MatrixXd &ctrl_pts, double &dt, double &time_inc)
+  void EGOPlannerManager::reparamBezier(PiecewiseBezier &bezier, vector<Eigen::Vector3d> &start_end_derivative, double ratio,
+                                        Eigen::MatrixXd &ctrl_pts, double &dt, double &time_inc)
   {
-    double time_origin = bspline.getTimeSum();
-    // int seg_num = bspline.getControlPoint().cols() - 3;
-    int seg_num = (bspline.getControlPoint().cols() - 1) / 3;
-    // double length = bspline.getLength(0.1);
-    // int seg_num = ceil(length / pp_.ctrl_pt_dist);
+    double time_origin = bezier.getTimeSum();
+    int seg_num = (bezier.getControlPoint().cols() - 1) / 3;
 
-    bspline.lengthenTime(ratio);
-    double duration = bspline.getTimeSum();
+    bezier.lengthenTime(ratio);
+    double duration = bezier.getTimeSum();
     dt = duration / double(seg_num);
     time_inc = duration - time_origin;
 
     vector<Eigen::Vector3d> point_set;
     for (double time = 0.0; time <= duration + 1e-4; time += dt)
     {
-      point_set.push_back(bspline.evaluateDeBoorT(time));
+      point_set.push_back(bezier.evaluateT(time));
     }
-    UniformBspline::parameterizeToBspline(dt, point_set, start_end_derivative, ctrl_pts);
+    PiecewiseBezier::parameterizeToBezier(dt, point_set, start_end_derivative, ctrl_pts);
   }
 
 } // namespace ego_planner

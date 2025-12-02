@@ -1,3 +1,8 @@
+/**
+ * @file plan_container.hpp
+ * @brief Data containers for planning with Piecewise Bezier Curves
+ */
+
 #ifndef _PLAN_CONTAINER_H_
 #define _PLAN_CONTAINER_H_
 
@@ -5,7 +10,7 @@
 #include <vector>
 #include <ros/ros.h>
 
-#include <bspline_opt/uniform_bspline.h>
+#include <bezier_opt/piecewise_bezier.h>
 #include <traj_utils/polynomial_traj.h>
 
 using std::vector;
@@ -13,12 +18,15 @@ using std::vector;
 namespace ego_planner
 {
 
+  /**
+   * @brief Container for global trajectory data
+   */
   class GlobalTrajData
   {
   private:
   public:
     PolynomialTraj global_traj_;
-    vector<UniformBspline> local_traj_;
+    vector<PiecewiseBezier> local_traj_;
 
     double global_duration_;
     ros::Time global_start_time_;
@@ -27,8 +35,7 @@ namespace ego_planner
     double last_time_inc_;
     double last_progress_time_;
 
-    GlobalTrajData(/* args */) {}
-
+    GlobalTrajData() {}
     ~GlobalTrajData() {}
 
     bool localTrajReachTarget() { return fabs(local_end_time_ - global_duration_) < 0.1; }
@@ -48,7 +55,7 @@ namespace ego_planner
       last_progress_time_ = 0.0;
     }
 
-    void setLocalTraj(UniformBspline traj, double local_ts, double local_te, double time_inc)
+    void setLocalTraj(PiecewiseBezier traj, double local_ts, double local_te, double time_inc)
     {
       local_traj_.resize(3);
       local_traj_[0] = traj;
@@ -76,7 +83,7 @@ namespace ego_planner
       {
         double tm, tmp;
         local_traj_[0].getTimeSpan(tm, tmp);
-        return local_traj_[0].evaluateDeBoor(tm + t - local_start_time_);
+        return local_traj_[0].evaluate(tm + t - local_start_time_);
       }
     }
 
@@ -94,7 +101,7 @@ namespace ego_planner
       {
         double tm, tmp;
         local_traj_[0].getTimeSpan(tm, tmp);
-        return local_traj_[1].evaluateDeBoor(tm + t - local_start_time_);
+        return local_traj_[1].evaluate(tm + t - local_start_time_);
       }
     }
 
@@ -112,27 +119,25 @@ namespace ego_planner
       {
         double tm, tmp;
         local_traj_[0].getTimeSpan(tm, tmp);
-        return local_traj_[2].evaluateDeBoor(tm + t - local_start_time_);
+        return local_traj_[2].evaluate(tm + t - local_start_time_);
       }
     }
 
-    // get Bspline paramterization data of a local trajectory within a sphere
-    // start_t: start time of the trajectory
-    // dist_pt: distance between the discretized points
+    /**
+     * @brief Get Bezier parameterization data within a sphere
+     */
     void getTrajByRadius(const double &start_t, const double &des_radius, const double &dist_pt,
                          vector<Eigen::Vector3d> &point_set, vector<Eigen::Vector3d> &start_end_derivative,
                          double &dt, double &seg_duration)
     {
-      double seg_length = 0.0; // length of the truncated segment
-      double seg_time = 0.0;   // duration of the truncated segment
-      double radius = 0.0;     // distance to the first point of the segment
+      double seg_length = 0.0;
+      double seg_time = 0.0;
+      double radius = 0.0;
 
       double delt = 0.2;
-      Eigen::Vector3d first_pt = getPosition(start_t); // first point of the segment
-      Eigen::Vector3d prev_pt = first_pt;              // previous point
-      Eigen::Vector3d cur_pt;                          // current point
-
-      // go forward until the traj exceed radius or global time
+      Eigen::Vector3d first_pt = getPosition(start_t);
+      Eigen::Vector3d prev_pt = first_pt;
+      Eigen::Vector3d cur_pt;
 
       while (radius < des_radius && seg_time < global_duration_ - start_t - 1e-3)
       {
@@ -145,13 +150,10 @@ namespace ego_planner
         radius = (cur_pt - first_pt).norm();
       }
 
-      // get parameterization dt by desired density of points
       int seg_num = floor(seg_length / dist_pt);
 
-      // get outputs
-
-      seg_duration = seg_time; // duration of the truncated segment
-      dt = seg_time / seg_num; // time difference between two points
+      seg_duration = seg_time;
+      dt = seg_time / seg_num;
 
       for (double tp = 0.0; tp <= seg_time + 1e-4; tp += dt)
       {
@@ -165,10 +167,9 @@ namespace ego_planner
       start_end_derivative.push_back(getAcceleration(start_t + seg_time));
     }
 
-    // get Bspline paramterization data of a fixed duration local trajectory
-    // start_t: start time of the trajectory
-    // duration: time length of the segment
-    // seg_num: discretized the segment into *seg_num* parts
+    /**
+     * @brief Get Bezier parameterization data for fixed duration
+     */
     void getTrajByDuration(double start_t, double duration, int seg_num,
                            vector<Eigen::Vector3d> &point_set,
                            vector<Eigen::Vector3d> &start_end_derivative, double &dt)
@@ -188,30 +189,32 @@ namespace ego_planner
     }
   };
 
+  /**
+   * @brief Planning parameters
+   */
   struct PlanParameters
   {
-    /* planning algorithm parameters */
-    double max_vel_, max_acc_, max_jerk_; // physical limits
-    double ctrl_pt_dist;                  // distance between adjacient B-spline control points
-    double feasibility_tolerance_;        // permitted ratio of vel/acc exceeding limits
+    double max_vel_, max_acc_, max_jerk_;
+    double ctrl_pt_dist;                  // Distance between control points
+    double feasibility_tolerance_;
     double planning_horizen_;
 
-    /* processing time */
     double time_search_ = 0.0;
     double time_optimize_ = 0.0;
     double time_adjust_ = 0.0;
   };
 
+  /**
+   * @brief Local trajectory data container
+   */
   struct LocalTrajData
   {
-    /* info of generated traj */
-
     int traj_id_;
     double duration_;
-    double global_time_offset; // This is because when the local traj finished and is going to switch back to the global traj, the global traj time is no longer matches the world time.
+    double global_time_offset;
     ros::Time start_time_;
     Eigen::Vector3d start_pos_;
-    UniformBspline position_traj_, velocity_traj_, acceleration_traj_;
+    PiecewiseBezier position_traj_, velocity_traj_, acceleration_traj_;
   };
 
 } // namespace ego_planner

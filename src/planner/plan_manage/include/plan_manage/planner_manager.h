@@ -1,10 +1,15 @@
+/**
+ * @file planner_manager.h
+ * @brief EGO Planner Manager with Piecewise Bezier Curve Trajectories
+ */
+
 #ifndef _PLANNER_MANAGER_H_
 #define _PLANNER_MANAGER_H_
 
 #include <stdlib.h>
 
-#include <bspline_opt/bspline_optimizer.h>
-#include <bspline_opt/uniform_bspline.h>
+#include <bezier_opt/bezier_optimizer.h>
+#include <bezier_opt/piecewise_bezier.h>
 #include <ego_planner/DataDisp.h>
 #include <plan_env/grid_map.h>
 #include <plan_manage/plan_container.hpp>
@@ -14,19 +19,23 @@
 namespace ego_planner
 {
 
-  // Fast Planner Manager
-  // Key algorithms of mapping and planning are called
-
+  /**
+   * @brief Main planning manager for EGO-Planner with Bezier curves
+   * 
+   * This class coordinates:
+   * - Path searching (A*)
+   * - Trajectory optimization (L-BFGS with Bezier curves)
+   * - Trajectory refinement and time reallocation
+   */
   class EGOPlannerManager
   {
-    // SECTION stable
   public:
     EGOPlannerManager();
     ~EGOPlannerManager();
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    /* main planning interface */
+    /* Main planning interface */
     bool reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel, Eigen::Vector3d start_acc,
                        Eigen::Vector3d end_pt, Eigen::Vector3d end_vel, bool flag_polyInit, bool flag_randomPolyTraj);
     bool EmergencyStop(Eigen::Vector3d stop_pos);
@@ -43,28 +52,23 @@ namespace ego_planner
     GridMap::Ptr grid_map_;
 
   private:
-    /* main planning algorithms & modules */
+    /* Main planning algorithms & modules */
     PlanningVisualization::Ptr visualization_;
 
-    BsplineOptimizer::Ptr bspline_optimizer_rebound_;
+    BezierOptimizer::Ptr bezier_optimizer_rebound_;
 
     int continous_failures_count_{0};
 
-    void updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now);
+    void updateTrajInfo(const PiecewiseBezier &position_traj, const ros::Time time_now);
 
-    void reparamBspline(UniformBspline &bspline, vector<Eigen::Vector3d> &start_end_derivative, double ratio, Eigen::MatrixXd &ctrl_pts, double &dt,
-                        double &time_inc);
+    void reparamBezier(PiecewiseBezier &bezier, vector<Eigen::Vector3d> &start_end_derivative, 
+                       double ratio, Eigen::MatrixXd &ctrl_pts, double &dt, double &time_inc);
 
-    bool refineTrajAlgo(UniformBspline &traj, vector<Eigen::Vector3d> &start_end_derivative, double ratio, double &ts, Eigen::MatrixXd &optimal_control_points);
-
-    // !SECTION stable
-
-    // SECTION developing
+    bool refineTrajAlgo(PiecewiseBezier &traj, vector<Eigen::Vector3d> &start_end_derivative, 
+                        double ratio, double &ts, Eigen::MatrixXd &optimal_control_points);
 
   public:
     typedef unique_ptr<EGOPlannerManager> Ptr;
-
-    // !SECTION
   };
 } // namespace ego_planner
 

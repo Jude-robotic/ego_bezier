@@ -6,7 +6,7 @@ set(CMAKE_CXX_FLAGS "-std=c++11")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
 find_package(catkin REQUIRED COMPONENTS
-  bspline_opt
+  bezier_opt
   path_searching
   roscpp
   std_msgs
@@ -19,7 +19,7 @@ find_package(PCL 1.7 REQUIRED)
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES traj_utils
- CATKIN_DEPENDS path_searching bspline_opt
+ CATKIN_DEPENDS path_searching bezier_opt
 #  DEPENDS system_lib
 )
 
@@ -39,4 +39,4 @@ add_library( traj_utils
     )
 target_link_libraries( traj_utils
     ${catkin_LIBRARIES} 
-    )  
+    )

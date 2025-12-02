@@ -16,7 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
   quadrotor_msgs
   plan_env
   path_searching
-  bspline_opt
+  bezier_opt
   traj_utils
   message_generation
   cv_bridge
@@ -25,10 +25,10 @@ find_package(catkin REQUIRED COMPONENTS
 # Generate messages in the 'msg' folder
 add_message_files(
   FILES
-  Bspline.msg
+  Bezier.msg
   DataDisp.msg
-  )
-  
+)
+
 # Generate added messages and services with any dependencies listed here
 generate_messages(
   DEPENDENCIES
@@ -36,12 +36,10 @@ generate_messages(
   geometry_msgs
 )
 
-# catkin_package(CATKIN_DEPENDS message_runtime)
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES ego_planner
- CATKIN_DEPENDS plan_env path_searching bspline_opt traj_utils message_runtime
-#  DEPENDS system_lib
+ CATKIN_DEPENDS plan_env path_searching bezier_opt traj_utils message_runtime
 )
 
 include_directories(
@@ -52,19 +50,16 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
 )
 
-
 add_executable(ego_planner_node
   src/ego_planner_node.cpp 
   src/ego_replan_fsm.cpp
   src/planner_manager.cpp
-  )
+)
 target_link_libraries(ego_planner_node 
   ${catkin_LIBRARIES}
-  )
+)
 add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
 add_executable(traj_server src/traj_server.cpp)
 target_link_libraries(traj_server ${catkin_LIBRARIES})
 add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
-
-

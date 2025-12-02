@@ -1,4 +1,4 @@
-#include <bspline_opt/gradient_descent_optimizer.h>
+#include <bezier_opt/gradient_descent_optimizer.h>
 
 #define RESET "\033[0m"
 #define RED "\033[31m"
