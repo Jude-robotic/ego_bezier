@@ -95,7 +95,8 @@ namespace ego_planner
 
     // main input
     // Eigen::MatrixXd control_points_;     // B-spline control points, N x dim
-    double bspline_interval_; // B-spline knot span
+    double segment_duration_; // Formerly bspline_interval_
+    int bezier_step_ = 3; // Step for Piecewise Bezier
     Eigen::Vector3d end_pt_;  // end of the trajectory
     // int             dim_;                // dimension of the B-spline
     //

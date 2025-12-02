@@ -2,7 +2,7 @@ int32 order
 int64 traj_id
 time start_time
 
-float64[] knots
+float64[] segment_durations
 geometry_msgs/Point[] pos_pts
 
 float64[] yaw_pts

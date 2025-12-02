@@ -450,16 +450,17 @@ namespace ego_planner
         bspline.pos_pts.push_back(pt);
       }
 
-      Eigen::VectorXd knots = info->position_traj_.getKnot();
-      bspline.knots.reserve(knots.rows());
-      for (int i = 0; i < knots.rows(); ++i)
-      {
-        bspline.knots.push_back(knots(i));
-      }
+      // Eigen::VectorXd knots = info->position_traj_.getKnot();
+      // bspline.knots.reserve(knots.rows());
+      // for (int i = 0; i < knots.rows(); ++i)
+      // {
+      //   bspline.knots.push_back(knots(i));
+      // }
+      bspline.segment_durations.push_back(info->position_traj_.getInterval());
 
       bspline_pub_.publish(bspline);
 
-      visualization_->displayOptimalList(info->position_traj_.get_control_points(), 0);
+      visualization_->displayOptimalList(info->position_traj_, 0);
     }
 
     return plan_success;
@@ -489,12 +490,13 @@ namespace ego_planner
       bspline.pos_pts.push_back(pt);
     }
 
-    Eigen::VectorXd knots = info->position_traj_.getKnot();
-    bspline.knots.reserve(knots.rows());
-    for (int i = 0; i < knots.rows(); ++i)
-    {
-      bspline.knots.push_back(knots(i));
-    }
+    // Eigen::VectorXd knots = info->position_traj_.getKnot();
+    // bspline.knots.reserve(knots.rows());
+    // for (int i = 0; i < knots.rows(); ++i)
+    // {
+    //   bspline.knots.push_back(knots(i));
+    // }
+    bspline.segment_durations.push_back(info->position_traj_.getInterval());
 
     bspline_pub_.publish(bspline);
 

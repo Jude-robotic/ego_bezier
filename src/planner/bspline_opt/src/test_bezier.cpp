@@ -97,5 +97,33 @@ int main(int argc, char** argv) {
         cout << "\033[31m>>> FAIL: 速度方向与控制点连线不一致。\033[0m" << endl;
     }
 
+    // ---------------------------------------------------------
+    // 测试点 4: 多段贝塞尔曲线测试 (Multi-segment Test)
+    // ---------------------------------------------------------
+    cout << "\n[Test 4] 多段贝塞尔曲线测试:" << endl;
+    // 构建两段贝塞尔曲线 (7个控制点)
+    // Segment 1: P0->P3, Segment 2: P3->P6
+    Eigen::MatrixXd multi_ctrl_pts(3, 7);
+    multi_ctrl_pts.col(0) << 0.0, 0.0, 0.0;
+    multi_ctrl_pts.col(1) << 1.0, 1.0, 0.0;
+    multi_ctrl_pts.col(2) << 2.0, 1.0, 0.0;
+    multi_ctrl_pts.col(3) << 3.0, 0.0, 0.0; // Junction
+    multi_ctrl_pts.col(4) << 4.0, -1.0, 0.0;
+    multi_ctrl_pts.col(5) << 5.0, -1.0, 0.0;
+    multi_ctrl_pts.col(6) << 6.0, 0.0, 0.0;
+
+    UniformBspline multi_bezier(multi_ctrl_pts, 3, 1.0);
+    
+    // Check junction point at t=1.0
+    Eigen::Vector3d junction_pos = multi_bezier.evaluateDeBoor(1.0);
+    printVec(multi_ctrl_pts.col(3), "期望连接点 P3");
+    printVec(junction_pos,          "实际连接点 P(1.0)");
+    
+    if ((junction_pos - multi_ctrl_pts.col(3)).norm() < 1e-4) {
+        cout << "\033[32m>>> PASS: 多段连接点位置正确。\033[0m" << endl;
+    } else {
+        cout << "\033[31m>>> FAIL: 多段连接点位置错误。\033[0m" << endl;
+    }
+
     return 0;
 }

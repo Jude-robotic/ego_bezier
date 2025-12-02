@@ -176,7 +176,7 @@ namespace ego_planner
     displayMarkerList(init_list_pub, init_pts, scale, color, id);
   }
 
-  void PlanningVisualization::displayOptimalList(Eigen::MatrixXd optimal_pts, int id)
+  void PlanningVisualization::displayOptimalList(UniformBspline traj, int id)
   {
 
     if (optimal_list_pub.getNumSubscribers() == 0)
@@ -184,6 +184,7 @@ namespace ego_planner
       return;
     }
 
+    Eigen::MatrixXd optimal_pts = traj.getControlPoint();
     vector<Eigen::Vector3d> list;
     for (int i = 0; i < optimal_pts.cols(); i++)
     {
@@ -192,6 +193,33 @@ namespace ego_planner
     }
     Eigen::Vector4d color(1, 0, 0, 1);
     displayMarkerList(optimal_list_pub, list, 0.15, color, id);
+
+    // Draw the actual Bezier curve
+    visualization_msgs::Marker line_strip;
+    line_strip.header.frame_id = "world";
+    line_strip.header.stamp = ros::Time::now();
+    line_strip.type = visualization_msgs::Marker::LINE_STRIP;
+    line_strip.action = visualization_msgs::Marker::ADD;
+    line_strip.id = id + 2000; // Avoid conflict with displayMarkerList ids
+
+    line_strip.pose.orientation.w = 1.0;
+    line_strip.color.r = 0.0;
+    line_strip.color.g = 1.0; // Green curve
+    line_strip.color.b = 0.0;
+    line_strip.color.a = 1.0;
+    line_strip.scale.x = 0.1; 
+
+    double duration = traj.getTimeSum();
+    for (double t = 0; t <= duration + 1e-4; t += 0.01)
+    {
+      Eigen::Vector3d pt = traj.evaluateDeBoorT(t);
+      geometry_msgs::Point p;
+      p.x = pt(0);
+      p.y = pt(1);
+      p.z = pt(2);
+      line_strip.points.push_back(p);
+    }
+    optimal_list_pub.publish(line_strip);
   }
 
   void PlanningVisualization::displayAStarList(std::vector<std::vector<Eigen::Vector3d>> a_star_paths, int id /* = Eigen::Vector4d(0.5,0.5,0,1)*/)

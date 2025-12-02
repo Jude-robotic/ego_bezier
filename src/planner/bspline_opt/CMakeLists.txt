@@ -42,3 +42,6 @@ add_library( bspline_opt
 target_link_libraries( bspline_opt
     ${catkin_LIBRARIES} 
     )  
+
+add_executable(test_bezier src/test_bezier.cpp)
+target_link_libraries(test_bezier bspline_opt ${catkin_LIBRARIES})

@@ -439,7 +439,8 @@ namespace ego_planner
 
     traj = UniformBspline(ctrl_pts, 3, ts);
 
-    double t_step = traj.getTimeSum() / (ctrl_pts.cols() - 3);
+    // double t_step = traj.getTimeSum() / (ctrl_pts.cols() - 3);
+    double t_step = traj.getInterval();
     bspline_optimizer_rebound_->ref_pts_.clear();
     for (double t = 0; t < traj.getTimeSum() + 1e-4; t += t_step)
       bspline_optimizer_rebound_->ref_pts_.push_back(traj.evaluateDeBoorT(t));
@@ -464,7 +465,8 @@ namespace ego_planner
                                          Eigen::MatrixXd &ctrl_pts, double &dt, double &time_inc)
   {
     double time_origin = bspline.getTimeSum();
-    int seg_num = bspline.getControlPoint().cols() - 3;
+    // int seg_num = bspline.getControlPoint().cols() - 3;
+    int seg_num = (bspline.getControlPoint().cols() - 1) / 3;
     // double length = bspline.getLength(0.1);
     // int seg_num = ceil(length / pp_.ctrl_pt_dist);
 

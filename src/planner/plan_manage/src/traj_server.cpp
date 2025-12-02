@@ -30,11 +30,11 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
 
   Eigen::MatrixXd pos_pts(3, msg->pos_pts.size());
 
-  Eigen::VectorXd knots(msg->knots.size());
-  for (size_t i = 0; i < msg->knots.size(); ++i)
-  {
-    knots(i) = msg->knots[i];
-  }
+  // Eigen::VectorXd knots(msg->knots.size());
+  // for (size_t i = 0; i < msg->knots.size(); ++i)
+  // {
+  //   knots(i) = msg->knots[i];
+  // }
 
   for (size_t i = 0; i < msg->pos_pts.size(); ++i)
   {
@@ -43,8 +43,11 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
     pos_pts(2, i) = msg->pos_pts[i].z;
   }
 
-  UniformBspline pos_traj(pos_pts, msg->order, 0.1);
-  pos_traj.setKnot(knots);
+  double interval = 0.1;
+  if (msg->segment_durations.size() > 0) interval = msg->segment_durations[0];
+
+  UniformBspline pos_traj(pos_pts, msg->order, interval);
+  // pos_traj.setKnot(knots);
 
   // parse yaw traj
 
