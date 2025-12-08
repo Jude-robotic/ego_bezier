@@ -116,11 +116,11 @@
     <param name="manager/planning_horizon" value="$(arg planning_horizon)" type="double"/>
 
   <!-- trajectory optimization (Bezier curve optimization) -->
-    <param name="optimization/lambda_smooth" value="1.0" type="double"/>
-    <param name="optimization/lambda_collision" value="5.0" type="double"/>
-    <param name="optimization/lambda_feasibility" value="1.0" type="double"/>
+    <param name="optimization/lambda_smooth" value="0.5" type="double"/>
+    <param name="optimization/lambda_collision" value="10.0" type="double"/>
+    <param name="optimization/lambda_feasibility" value="2.0" type="double"/>
     <param name="optimization/lambda_fitness" value="1.0" type="double"/>
-    <param name="optimization/dist0" value="0.5" type="double"/>
+    <param name="optimization/dist0" value="0.3" type="double"/>
     <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
     <param name="optimization/max_acc" value="$(arg max_acc)" type="double"/>
 

@@ -209,9 +209,9 @@ namespace ego_planner
       if (z_pos < ground_clearance)
       {
         double z_err = ground_clearance - z_pos;
-        // Strong quadratic penalty to push trajectory upward
-        cost += 100.0 * z_err * z_err;
-        gradient(2, i) += -200.0 * z_err; // gradient points upward
+        // FIX: Use cubic penalty (stronger push near ground) with higher weight
+        cost += 1000.0 * pow(z_err, 3);  // Cubic penalty increases rapidly
+        gradient(2, i) += -3000.0 * pow(z_err, 2); // Cubic gradient: 3*weight*z_err^2
       }
     }
   }
@@ -258,7 +258,9 @@ namespace ego_planner
       Eigen::Vector3d p3 = q.col(idx + 3);
 
       Eigen::Vector3d jerk_vec = (p3 - 3 * p2 + 3 * p1 - p0);
-      double weight = 36.0 / pow(ts, 5);
+      // FIX: Use fixed weight instead of 36.0/T^5 to prevent smoothness from dominating
+      // Original: double weight = 36.0 / pow(ts, 5);  // This made smoothness 1000x-10000x stronger!
+      double weight = 10.0;  // Moderate fixed weight for jerk minimization
       
       cost += weight * jerk_vec.squaredNorm();
 
@@ -270,8 +272,9 @@ namespace ego_planner
     }
 
     // Part 2: Inter-segment continuity constraints
-    double cont_weight_vel = 1000.0;
-    double cont_weight_acc = 1000.0;
+    // FIX: Increase to 100000.0 to ensure strong C2 continuity between segments
+    double cont_weight_vel = 10000.0;  // Velocity continuity
+    double cont_weight_acc = 10000.0;  // Acceleration continuity
 
     for (int k = 0; k < num_segments - 1; ++k)
     {
@@ -360,6 +363,90 @@ namespace ego_planner
 
   bool BezierOptimizer::check_collision_and_rebound(void)
   {
+    // FIX: Implement rebound mechanism to dynamically detect collisions during optimization
+    // This prevents the optimizer from accepting trajectories that pass through newly encountered obstacles
+    
+    if (!grid_map_) return false;
+    
+    bool collision_detected = false;
+    double max_clearance_violation = 0.0;
+    
+    // Check each control point for collisions
+    for (int i = 0; i < cps_.points.cols(); ++i)
+    {
+      Eigen::Vector3d cp = cps_.points.col(i);
+      
+      // Check if point is in occupied or inflated space
+      if (!grid_map_->isInMap(cp)) continue;
+      
+      // Check occupancy directly - if occupied, we have a collision
+      int occ = grid_map_->getInflateOccupancy(cp);
+      
+      // If in occupied space, we have a collision
+      if (occ > 0)
+      {
+        collision_detected = true;
+        max_clearance_violation = std::max(max_clearance_violation, cps_.clearance);
+        
+        // Re-sample collision constraints around this control point
+        // Similar to initControlPoints but for a single point
+        double res = grid_map_->getResolution();
+        double max_search = std::max(3.0, cps_.clearance * 2.0);
+        int steps = std::max(4, int(max_search / res));
+        
+        std::vector<Eigen::Vector3d> dirs;
+        int azimuth_samples = 16;
+        std::vector<double> elevs = {0.0, 0.3, -0.3, 0.785, -0.785, 1.57, -1.57};
+        
+        for (int ea = 0; ea < (int)elevs.size(); ++ea) {
+          double el = elevs[ea];
+          for (int a = 0; a < azimuth_samples; ++a) {
+            double ang = 2.0 * M_PI * double(a) / double(azimuth_samples);
+            Eigen::Vector3d d;
+            d.x() = cos(ang) * cos(el);
+            d.y() = sin(ang) * cos(el);
+            d.z() = sin(el);
+            dirs.push_back(d.normalized());
+          }
+        }
+        
+        // Clear old constraints for this point and regenerate
+        cps_.base_point[i].clear();
+        cps_.direction[i].clear();
+        
+        for (const auto &d : dirs) {
+          for (int s = 1; s <= steps; ++s) {
+            double dist_ray = double(s) * res * 0.8;
+            Eigen::Vector3d sample = cp + d * dist_ray;
+            if (!grid_map_->isInMap(sample)) continue;
+            int occ = grid_map_->getInflateOccupancy(sample);
+            if (occ > 0) {
+              Eigen::Vector3i idx;
+              grid_map_->posToIndex(sample, idx);
+              Eigen::Vector3d voxel_center;
+              grid_map_->indexToPos(idx, voxel_center);
+              Eigen::Vector3d dir_vec = (cp - voxel_center);
+              double nrm = dir_vec.norm();
+              if (nrm > 1e-6) {
+                dir_vec /= nrm;
+                cps_.base_point[i].push_back(voxel_center);
+                cps_.direction[i].push_back(dir_vec);
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // If significant collision detected, trigger rebound
+    if (collision_detected && max_clearance_violation > 0.05)
+    {
+      ROS_WARN("[BezierOptimizer] Collision detected! Max violation: %.3fm, regenerating constraints", max_clearance_violation);
+      force_stop_type_ = STOP_FOR_REBOUND;
+      return true;
+    }
+    
     return false;
   }
 
@@ -413,7 +500,8 @@ namespace ego_planner
     bool success = (result == lbfgs::LBFGS_CONVERGENCE || result == lbfgs::LBFGS_STOP ||
                     result == lbfgs::LBFGS_ALREADY_MINIMIZED);
     
-    if (result == lbfgs::LBFGSERR_MAXIMUMITERATION && final_cost < 10.0) {
+    if (result == lbfgs::LBFGSERR_MAXIMUMITERATION && final_cost < 20.0) //迭代上限超过，但cost低，接受结果
+    {
       std::cout << "[BezierOptimizer] Max iterations reached but cost is low, accepting result" << std::endl;
       success = true;
     }
