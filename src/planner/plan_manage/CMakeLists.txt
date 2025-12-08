@@ -63,3 +63,18 @@ add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 add_executable(traj_server src/traj_server.cpp)
 target_link_libraries(traj_server ${catkin_LIBRARIES})
 add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Trajectory State Publisher
+add_executable(trajectory_state_publisher src/trajectory_state_publisher.cpp)
+target_link_libraries(trajectory_state_publisher ${catkin_LIBRARIES})
+add_dependencies(trajectory_state_publisher ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Local Map Visualizer
+add_executable(local_map_visualizer src/local_map_visualizer.cpp)
+target_link_libraries(local_map_visualizer ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+add_dependencies(local_map_visualizer ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Enhanced Trajectory Visualizer
+add_executable(trajectory_visualizer src/trajectory_visualizer.cpp)
+target_link_libraries(trajectory_visualizer ${catkin_LIBRARIES} bezier_opt)
+add_dependencies(trajectory_visualizer ${${PROJECT_NAME}_EXPORTED_TARGETS})

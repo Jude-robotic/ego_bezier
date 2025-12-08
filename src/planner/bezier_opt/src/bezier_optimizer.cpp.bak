@@ -28,6 +28,10 @@ namespace ego_planner
     
     // Initialize collision weight for rebound optimization
     new_lambda2_ = lambda2_;
+  
+  // DEBUG: Print loaded parameters
+  ROS_WARN("[BezierOptimizer] Loaded params: lambda1=%f, lambda2=%f, lambda3=%f, dist0=%f", 
+           lambda1_, lambda2_, lambda3_, dist0_);
   }
 
   void BezierOptimizer::setEnvironment(const GridMap::Ptr &env)
@@ -69,8 +73,7 @@ namespace ego_planner
         // sampling directions: azimuthal around XY plane, with a few elevations
         std::vector<Eigen::Vector3d> dirs;
         int azimuth_samples = 16;
-        // Add vertical sampling: 0° (horizontal), ±17°, ±45°, ±90° (up/down)
-        std::vector<double> elevs = {0.0, 0.3, -0.3, 0.785, -0.785, 1.57, -1.57};
+        std::vector<double> elevs = {0.0, 0.3, -0.3};
         for (int ea = 0; ea < (int)elevs.size(); ++ea) {
           double el = elevs[ea];
           for (int a = 0; a < azimuth_samples; ++a) {
@@ -151,7 +154,7 @@ namespace ego_planner
    * @brief Compute collision avoidance cost using rebound method
    */
   void BezierOptimizer::calcDistanceCostRebound(const Eigen::MatrixXd &q, double &cost,
-                                                Eigen::MatrixXd &gradient, int iter_num, double smoothness_cost)
+                                                 Eigen::MatrixXd &gradient, int iter_num, double smoothness_cost)
   {
     cost = 0.0;
     
@@ -169,6 +172,10 @@ namespace ego_planner
     double a = 3 * demarcation, b = -3 * pow(demarcation, 2), c = pow(demarcation, 3);
     
     for (int i = 0; i < end_idx; ++i)
+      // DEBUG: Print constraints per control point
+      if (iter_num == 0 && i < 3) {
+        ROS_WARN("[BezierOptimizer] CP[%d]: %zu constraints", i, cps_.direction[i].size());
+      }
     {
       // Safety check: ensure direction vectors are initialized
       if (i >= cps_.direction.size()) continue;
@@ -202,17 +209,6 @@ namespace ego_planner
           gradient.col(i) += -(2.0 * a * dist_err + b) * dist_grad;
         }
       }
-      
-      // Ground avoidance: add strong penalty if control point is too low
-      double ground_clearance = 0.3; // minimum 0.3m above ground
-      double z_pos = q.col(i)(2);
-      if (z_pos < ground_clearance)
-      {
-        double z_err = ground_clearance - z_pos;
-        // Strong quadratic penalty to push trajectory upward
-        cost += 100.0 * z_err * z_err;
-        gradient(2, i) += -200.0 * z_err; // gradient points upward
-      }
     }
   }
   void BezierOptimizer::calcFitnessCost(const Eigen::MatrixXd &q, double &cost, 
@@ -223,6 +219,10 @@ namespace ego_planner
     if (ref_pts_.size() != end_idx) return;
 
     for (int i = 0; i < end_idx; ++i)
+      // DEBUG: Print constraints per control point
+      if (iter_num == 0 && i < 3) {
+        ROS_WARN("[BezierOptimizer] CP[%d]: %zu constraints", i, cps_.direction[i].size());
+      }
     {
       Eigen::Vector3d diff = q.col(i) - ref_pts_[i];
       cost += diff.squaredNorm();

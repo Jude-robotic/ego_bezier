@@ -25,9 +25,6 @@ namespace ego_planner
     nh.param("optimization/max_vel", max_vel_, -1.0);
     nh.param("optimization/max_acc", max_acc_, -1.0);
     nh.param("optimization/order", order_, 3);  // Cubic Bezier
-    
-    // Initialize collision weight for rebound optimization
-    new_lambda2_ = lambda2_;
   }
 
   void BezierOptimizer::setEnvironment(const GridMap::Ptr &env)
@@ -51,9 +48,6 @@ namespace ego_planner
     if (flag_first_init)
     {
       cps_.clearance = dist0_;
-      // DEBUG: Verify clearance assignment
-      ROS_WARN("[BezierOptimizer] initControlPoints: clearance set to %f (dist0_=%f)", 
-               cps_.clearance, dist0_);
       cps_.resize(init_points.cols());
       cps_.points = init_points;
       // Initialize collision base points and directions from the grid map
@@ -69,8 +63,7 @@ namespace ego_planner
         // sampling directions: azimuthal around XY plane, with a few elevations
         std::vector<Eigen::Vector3d> dirs;
         int azimuth_samples = 16;
-        // Add vertical sampling: 0° (horizontal), ±17°, ±45°, ±90° (up/down)
-        std::vector<double> elevs = {0.0, 0.3, -0.3, 0.785, -0.785, 1.57, -1.57};
+        std::vector<double> elevs = {0.0, 0.3, -0.3};
         for (int ea = 0; ea < (int)elevs.size(); ++ea) {
           double el = elevs[ea];
           for (int a = 0; a < azimuth_samples; ++a) {
@@ -154,64 +147,87 @@ namespace ego_planner
                                                 Eigen::MatrixXd &gradient, int iter_num, double smoothness_cost)
   {
     cost = 0.0;
-    
-    // Traverse all control points
-    int end_idx = q.cols();
-    // Demarcation distance (safety clearance)
-    double demarcation = cps_.clearance;
-    
-    // DEBUG: Print clearance on first iteration
-    if (iter_num == 0) {
-      ROS_WARN("[BezierOptimizer] calcDistanceCostRebound: clearance=%f, demarcation=%f", 
-               cps_.clearance, demarcation);
-    }
-    // Cubic polynomial coefficients to ensure continuity at demarcation
-    double a = 3 * demarcation, b = -3 * pow(demarcation, 2), c = pow(demarcation, 3);
-    
-    for (int i = 0; i < end_idx; ++i)
-    {
-      // Safety check: ensure direction vectors are initialized
-      if (i >= cps_.direction.size()) continue;
-      
-      // Traverse all constraint directions for this control point
-      for (size_t j = 0; j < cps_.direction[i].size(); ++j)
-      {
-        // Compute signed distance from control point to base point (projected along constraint direction)
-        double dist = (q.col(i) - cps_.base_point[i][j]).dot(cps_.direction[i][j]);
-        
-        // Distance error = safety clearance - actual distance
-        double dist_err = cps_.clearance - dist;
-        
-        // Gradient direction
-        Eigen::Vector3d dist_grad = cps_.direction[i][j];
+    if (!grid_map_) return;
 
-        if (dist_err < 0)
-        {
-          // Control point is outside safety zone, no penalty needed
-        }
-        else if (dist_err < demarcation)
-        {
-          // Control point is close to obstacle, use cubic penalty
-          cost += pow(dist_err, 3);
-          gradient.col(i) += -3.0 * dist_err * dist_err * dist_grad;
-        }
-        else
-        {
-          // Control point is deep inside obstacle region, use stronger quadratic penalty
-          cost += a * dist_err * dist_err + b * dist_err + c;
-          gradient.col(i) += -(2.0 * a * dist_err + b) * dist_grad;
+    int end_idx = q.cols();
+    double clearance = cps_.clearance;
+    double resolution = grid_map_->getResolution();
+    double demarcation = clearance;
+    double a = 3 * demarcation, b = -3 * pow(demarcation, 2), c = pow(demarcation, 3);
+
+    // Precompute sampling directions
+    static std::vector<Eigen::Vector3d> sample_dirs;
+    if (sample_dirs.empty()) {
+      int azimuth_samples = 12;
+      std::vector<double> elevations = {0.0, 0.4, -0.4, 0.8, -0.8};
+      for (double el : elevations) {
+        for (int a = 0; a < azimuth_samples; ++a) {
+          double ang = 2.0 * M_PI * double(a) / double(azimuth_samples);
+          Eigen::Vector3d d;
+          d.x() = cos(ang) * cos(el);
+          d.y() = sin(ang) * cos(el);
+          d.z() = sin(el);
+          sample_dirs.push_back(d.normalized());
         }
       }
-      
-      // Ground avoidance: add strong penalty if control point is too low
-      double ground_clearance = 0.3; // minimum 0.3m above ground
-      double z_pos = q.col(i)(2);
-      if (z_pos < ground_clearance)
-      {
-        double z_err = ground_clearance - z_pos;
-        // Strong quadratic penalty to push trajectory upward
-        cost += 100.0 * z_err * z_err;
-        gradient(2, i) += -200.0 * z_err; // gradient points upward
+    }
+
+    double search_range = std::max(clearance * 2.0, 1.5);
+
+    for (int i = 0; i < end_idx; ++i)
+    {
+      Eigen::Vector3d pt = q.col(i);
+      if (!grid_map_->isInMap(pt)) continue;
+
+      // 1. Check if inside obstacle
+      if (grid_map_->getInflateOccupancy(pt) > 0) {
+        double min_dist_to_free = search_range;
+        Eigen::Vector3d escape_dir = Eigen::Vector3d::Zero();
+        bool found_free = false;
+
+        for (const auto& dir : sample_dirs) {
+          for (double d = resolution; d <= search_range; d += resolution) {
+            Eigen::Vector3d sample = pt + dir * d;
+            if (grid_map_->isInMap(sample) && grid_map_->getInflateOccupancy(sample) == 0) {
+              if (d < min_dist_to_free) {
+                min_dist_to_free = d;
+                escape_dir = dir;
+                found_free = true;
+              }
+              break;
+            }
+          }
+        }
+
+        if (found_free) {
+           double dist_err = min_dist_to_free + clearance;
+           cost += a * dist_err * dist_err + b * dist_err + c;
+           gradient.col(i) += -(2.0 * a * dist_err + b) * escape_dir;
+        }
+        continue;
+      }
+
+      // 2. Check nearby obstacles
+      for (const auto& dir : sample_dirs) {
+        for (double d = resolution; d <= search_range; d += resolution) {
+          Eigen::Vector3d sample = pt + dir * d;
+          if (!grid_map_->isInMap(sample)) break;
+          if (grid_map_->getInflateOccupancy(sample) > 0) {
+            if (d < clearance) {
+              double dist_err = clearance - d;
+              Eigen::Vector3d repulse_dir = -dir;
+              
+              if (dist_err < demarcation) {
+                cost += pow(dist_err, 3);
+                gradient.col(i) += -3.0 * dist_err * dist_err * repulse_dir;
+              } else {
+                cost += a * dist_err * dist_err + b * dist_err + c;
+                gradient.col(i) += -(2.0 * a * dist_err + b) * repulse_dir;
+              }
+            }
+            break;
+          }
+        }
       }
     }
   }

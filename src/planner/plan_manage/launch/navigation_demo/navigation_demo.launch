@@ -1,0 +1,151 @@
+<!-- 
+  navigation_demo.launch
+  
+  功能:
+  1. 2D Nav Goal 目标点选择导航
+  2. 局部建图 + 避障
+  3. 实时轨迹状态输出 (仅控制台显示轨迹信息)
+  4. 轨迹可视化 (红色控制点 / 绿色规划 / 蓝色执行)
+  5. 全局地图可视化
+  
+  使用方法:
+  roslaunch ego_planner navigation_demo.launch
+  然后在 RViz 中使用 "2D Nav Goal" 按钮设定目标点
+-->
+
+<launch>
+  <!-- ===================== 地图参数 ===================== -->
+  <arg name="map_size_x" default="50.0"/>
+  <arg name="map_size_y" default="50.0"/>
+  <arg name="map_size_z" default="3.0"/>
+  
+  <!-- ===================== 里程计话题 (VIO/LIO) ===================== -->
+  <arg name="odom_topic" default="/visual_slam/odom"/>
+  
+  <!-- ===================== 无人机性能参数 ===================== -->
+  <arg name="max_vel" default="2.0"/>
+  <arg name="max_acc" default="3.0"/>
+  <arg name="planning_horizon" default="7.5"/>
+  
+  <!-- ===================== 起点位姿 (仿真用) ===================== -->
+  <arg name="init_x" default="-15.0"/>
+  <arg name="init_y" default="0.0"/>
+  <arg name="init_z" default="1.0"/>
+  
+  <!-- ===================== 轨迹可视化参数 ===================== -->
+  <arg name="enable_console_output" default="true"/>
+  <arg name="enable_file_logging" default="true"/>
+  <arg name="log_file_path" default="/tmp/ego_trajectory_log.csv"/>
+  
+  <!-- ===================== 局部地图可视化参数 ===================== -->
+  <arg name="sensing_range" default="5.0"/>
+  <arg name="local_map_r" default="1.0"/>
+  <arg name="local_map_g" default="0.5"/>
+  <arg name="local_map_b" default="0.0"/>
+  
+  <!-- ===================== 主规划节点 (静默模式) ===================== -->
+  <include file="$(find ego_planner)/launch/advanced_param.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+    
+    <!-- 深度相机/点云话题 (使用模拟器) -->
+    <arg name="camera_pose_topic" value="/pcl_render_node/camera_pose"/>
+    <arg name="depth_topic" value="/pcl_render_node/depth"/>
+    <arg name="cloud_topic" value="/pcl_render_node/cloud"/>
+    
+    <!-- 相机内参 -->
+    <arg name="cx" value="321.04638671875"/>
+    <arg name="cy" value="243.44969177246094"/>
+    <arg name="fx" value="387.229248046875"/>
+    <arg name="fy" value="387.229248046875"/>
+    
+    <arg name="max_vel" value="$(arg max_vel)"/>
+    <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+    
+    <!-- 使用 2D Nav Goal 模式 -->
+    <arg name="flight_type" value="1"/>
+    
+    <!-- 预设路径点 (flight_type=1 时不使用) -->
+    <arg name="point_num" value="1"/>
+    <arg name="point0_x" value="0.0"/>
+    <arg name="point0_y" value="0.0"/>
+    <arg name="point0_z" value="1.0"/>
+    <arg name="point1_x" value="0.0"/>
+    <arg name="point1_y" value="0.0"/>
+    <arg name="point1_z" value="1.0"/>
+    <arg name="point2_x" value="0.0"/>
+    <arg name="point2_y" value="0.0"/>
+    <arg name="point2_z" value="1.0"/>
+    <arg name="point3_x" value="0.0"/>
+    <arg name="point3_y" value="0.0"/>
+    <arg name="point3_z" value="1.0"/>
+    <arg name="point4_x" value="0.0"/>
+    <arg name="point4_y" value="0.0"/>
+    <arg name="point4_z" value="1.0"/>
+  </include>
+  
+  <!-- ===================== 轨迹服务器 (静默模式) ===================== -->
+  <node pkg="ego_planner" name="traj_server" type="traj_server" output="log">
+    <remap from="/position_cmd" to="planning/pos_cmd"/>
+    <remap from="/odom_world" to="$(arg odom_topic)"/>
+    <param name="traj_server/time_forward" value="1.0" type="double"/>
+  </node>
+  
+  <!-- ===================== 路径点生成器 (静默模式) ===================== -->
+  <node pkg="waypoint_generator" name="waypoint_generator" type="waypoint_generator" output="log">
+    <remap from="~odom" to="$(arg odom_topic)"/>
+    <remap from="~goal" to="/move_base_simple/goal"/>
+    <remap from="~traj_start_trigger" to="/traj_start_trigger"/>
+    <param name="waypoint_type" value="manual-lonely-waypoint"/>
+  </node>
+  
+  <!-- ===================== 增强轨迹可视化器 (唯一输出到控制台) ===================== -->
+  <node pkg="ego_planner" name="trajectory_visualizer" type="trajectory_visualizer" output="screen">
+    <remap from="/odom_world" to="$(arg odom_topic)"/>
+    <param name="trajectory_vis/enable_console_output" value="$(arg enable_console_output)"/>
+    <param name="trajectory_vis/enable_file_logging" value="$(arg enable_file_logging)"/>
+    <param name="trajectory_vis/log_file_path" value="$(arg log_file_path)"/>
+    <param name="trajectory_vis/output_rate" value="10.0"/>
+    <param name="trajectory_vis/max_executed_points" value="5000"/>
+    <param name="trajectory_vis/control_point_size" value="0.15"/>
+    <param name="trajectory_vis/planned_line_width" value="0.05"/>
+    <param name="trajectory_vis/executed_line_width" value="0.03"/>
+  </node>
+  
+  <!-- ===================== 局部地图可视化器 (静默模式) ===================== -->
+  <node pkg="ego_planner" name="local_map_visualizer" type="local_map_visualizer" output="log">
+    <remap from="/odom_world" to="$(arg odom_topic)"/>
+    <param name="local_map_vis/sensing_range" value="$(arg sensing_range)"/>
+    <param name="local_map_vis/map_resolution" value="0.1"/>
+    <param name="local_map_vis/frame_id" value="world"/>
+    <param name="local_map_vis/local_map_r" value="$(arg local_map_r)"/>
+    <param name="local_map_vis/local_map_g" value="$(arg local_map_g)"/>
+    <param name="local_map_vis/local_map_b" value="$(arg local_map_b)"/>
+    <param name="local_map_vis/sensing_range_r" value="1.0"/>
+    <param name="local_map_vis/sensing_range_g" value="0.0"/>
+    <param name="local_map_vis/sensing_range_b" value="0.0"/>
+  </node>
+  
+  <!-- ===================== 仿真环境 ===================== -->
+  <include file="$(find ego_planner)/launch/simulator.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="c_num" value="200"/>
+    <arg name="p_num" value="200"/>
+    <arg name="min_dist" value="1.2"/>
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+    <arg name="init_x" value="$(arg init_x)"/>
+    <arg name="init_y" value="$(arg init_y)"/>
+    <arg name="init_z" value="$(arg init_z)"/>
+  </include>
+  
+  <!-- ===================== RViz 可视化 ===================== -->
+  <node name="rviz" pkg="rviz" type="rviz" 
+        args="-d $(find ego_planner)/launch/navigation_demo/navigation_demo.rviz"
+        required="true" output="log"/>
+
+</launch>
