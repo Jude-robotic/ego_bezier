@@ -4,6 +4,8 @@
  */
 
 #include <plan_manage/planner_manager.h>
+#include <plan_manage/planner_metrics.h>
+#include <chrono>
 #include <thread>
 
 namespace ego_planner
@@ -34,13 +36,18 @@ namespace ego_planner
     bezier_optimizer_rebound_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
 
     
+    // Initialize metrics recorder
+    metrics_recorder_.reset(new PlannerMetricsRecorder(nh));
+    ROS_INFO("\033[32m[Metrics] Performance monitoring enabled\033[0m");
     visualization_ = vis;
-    
   }
 
   bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
                                         Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
                                         Eigen::Vector3d local_target_vel, bool flag_polyInit, bool flag_randomPolyTraj)
+  // Metrics: Record planning attempt
+  auto plan_start = std::chrono::high_resolution_clock::now();
+  bool plan_success = false;
   {
     static int count = 0;
     std::cout << endl << "[Bezier replan]: -------------------------------------" << count++ << std::endl;

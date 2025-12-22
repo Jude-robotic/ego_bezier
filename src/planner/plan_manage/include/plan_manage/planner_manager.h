@@ -50,6 +50,7 @@ namespace ego_planner
     LocalTrajData local_data_;
     GlobalTrajData global_data_;
     GridMap::Ptr grid_map_;
+    
 
   private:
     /* Main planning algorithms & modules */

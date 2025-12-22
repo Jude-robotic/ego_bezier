@@ -78,3 +78,11 @@ add_dependencies(local_map_visualizer ${${PROJECT_NAME}_EXPORTED_TARGETS})
 add_executable(trajectory_visualizer src/trajectory_visualizer.cpp)
 target_link_libraries(trajectory_visualizer ${catkin_LIBRARIES} bezier_opt)
 add_dependencies(trajectory_visualizer ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Metrics Recorder Node
+add_executable(metrics_recorder_node
+  src/metrics_recorder_node.cpp
+  src/planner_metrics.cpp
+)
+target_link_libraries(metrics_recorder_node ${catkin_LIBRARIES})
+add_dependencies(metrics_recorder_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
