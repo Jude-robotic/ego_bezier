@@ -86,3 +86,11 @@ add_executable(metrics_recorder_node
 )
 target_link_libraries(metrics_recorder_node ${catkin_LIBRARIES})
 add_dependencies(metrics_recorder_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm Trajectory Generator Node (多机协同)
+add_executable(swarm_traj_generator_node
+  src/swarm_traj_generator_node.cpp
+  src/swarm_trajectory_generator.cpp
+)
+target_link_libraries(swarm_traj_generator_node ${catkin_LIBRARIES})
+add_dependencies(swarm_traj_generator_node ${${PROJECT_NAME}_EXPORTED_TARGETS})

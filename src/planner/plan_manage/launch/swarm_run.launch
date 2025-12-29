@@ -1,0 +1,114 @@
+<launch>
+  <!-- 
+    多机协同系统Launch文件
+    主机(uav_0): 执行完整的SLAM、建图、路径规划
+    从机(uav_1~4): 接收集群算法生成的轨迹，环绕跟随主机
+  -->
+
+  <!-- ==================== 全局参数 ==================== -->
+  <arg name="map_size_x" default="40.0"/>
+  <arg name="map_size_y" default="40.0"/>
+  <arg name="map_size_z" default="3.0"/>
+  <arg name="odom_topic" default="/visual_slam/odom"/>
+  
+  <!-- 从机数量 -->
+  <arg name="num_followers" default="4"/>
+  
+  <!-- 集群编队参数 -->
+  <arg name="formation_radius" default="3.0"/>  <!-- 编队半径(米) -->
+  <arg name="altitude_offset" default="0.5"/>   <!-- 高度偏移(米) -->
+
+  <!-- ==================== 主机 (uav_0) ==================== -->
+  <!-- 主机执行完整的EGO Planner，包括建图和规划 -->
+  <group ns="uav_0">
+    <include file="$(find ego_planner)/launch/advanced_param.xml">
+      <arg name="map_size_x_" value="$(arg map_size_x)"/>
+      <arg name="map_size_y_" value="$(arg map_size_y)"/>
+      <arg name="map_size_z_" value="$(arg map_size_z)"/>
+      <arg name="odometry_topic" value="$(arg odom_topic)"/>
+
+      <!-- 深度相机参数 -->
+      <arg name="camera_pose_topic" value="/pcl_render_node/camera_pose"/>
+      <arg name="depth_topic" value="/pcl_render_node/depth"/>
+      <arg name="cloud_topic" value="/pcl_render_node/cloud"/>
+
+      <arg name="cx" value="321.04638671875"/>
+      <arg name="cy" value="243.44969177246094"/>
+      <arg name="fx" value="387.229248046875"/>
+      <arg name="fy" value="387.229248046875"/>
+
+      <!-- 运动参数 -->
+      <arg name="max_vel" value="1.5"/>
+      <arg name="max_acc" value="2.0"/>
+      <arg name="planning_horizon" value="7.5"/>
+
+      <!-- 航点参数 -->
+      <arg name="flight_type" value="2"/>
+      <arg name="point_num" value="5"/>
+
+      <arg name="point0_x" value="-15.0"/>
+      <arg name="point0_y" value="0.0"/>
+      <arg name="point0_z" value="1.0"/>
+
+      <arg name="point1_x" value="0.0"/>
+      <arg name="point1_y" value="15.0"/>
+      <arg name="point1_z" value="1.0"/>
+
+      <arg name="point2_x" value="15.0"/>
+      <arg name="point2_y" value="0.0"/>
+      <arg name="point2_z" value="1.0"/>
+
+      <arg name="point3_x" value="0.0"/>
+      <arg name="point3_y" value="-15.0"/>
+      <arg name="point3_z" value="1.0"/>
+
+      <arg name="point4_x" value="-15.0"/>
+      <arg name="point4_y" value="0.0"/>
+      <arg name="point4_z" value="1.0"/>
+    </include>
+
+    <!-- 轨迹服务器 -->
+    <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+      <remap from="/position_cmd" to="planning/pos_cmd"/>
+      <remap from="/odom_world" to="$(arg odom_topic)"/>
+      <param name="traj_server/time_forward" value="1.0" type="double"/>
+    </node>
+
+    <!-- 航点生成器 -->
+    <node pkg="waypoint_generator" name="waypoint_generator" type="waypoint_generator" output="screen">
+      <remap from="~odom" to="$(arg odom_topic)"/>
+      <remap from="~goal" to="/move_base_simple/goal"/>
+      <remap from="~traj_start_trigger" to="/traj_start_trigger"/>
+      <param name="waypoint_type" value="manual-lonely-waypoint"/>
+    </node>
+  </group>
+
+  <!-- ==================== 环境仿真器 ==================== -->
+  <!-- 只需要一个共享的仿真环境 -->
+  <include file="$(find ego_planner)/launch/simulator.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="c_num" value="200"/>
+    <arg name="p_num" value="200"/>
+    <arg name="min_dist" value="1.2"/>
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+  </include>
+
+  <!-- ==================== 集群轨迹生成器 ==================== -->
+  <!-- 核心节点：接收主机轨迹，生成从机轨迹 -->
+  <node pkg="ego_planner" name="swarm_traj_generator" type="swarm_traj_generator_node" output="screen">
+    <param name="swarm/num_followers" value="$(arg num_followers)"/>
+    <param name="swarm/formation_radius" value="$(arg formation_radius)"/>
+    <param name="swarm/altitude_offset" value="$(arg altitude_offset)"/>
+    <param name="swarm/world_frame" value="world"/>
+  </node>
+
+  <!-- ==================== RViz可视化 ==================== -->
+  <include file="$(find ego_planner)/launch/rviz.launch"/>
+
+  <!-- ==================== 信息输出 ==================== -->
+  <node pkg="rostopic" type="rostopic" name="swarm_info" 
+        args="echo -n 1 '多机协同系统已启动'" output="screen" launch-prefix="bash -c 'sleep 3; $0 $@'"/>
+
+</launch>

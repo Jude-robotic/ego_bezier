@@ -82,11 +82,13 @@ namespace ego_planner
     ros::Timer exec_timer_, safety_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_;
     ros::Publisher replan_pub_, new_pub_, bezier_pub_, data_disp_pub_;
+    ros::Publisher traj_path_pub_;  // 发布Path格式的轨迹（用于多机协同）
 
     /* Helper functions */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj);
     bool callEmergencyStop(Eigen::Vector3d stop_pos);
     bool planFromCurrentTraj();
+    void publishTrajectoryPath();  // 发布轨迹Path消息
 
     void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
     std::pair<int, EGOReplanFSM::FSM_EXEC_STATE> timesOfConsecutiveStateCalls();
