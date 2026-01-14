@@ -635,10 +635,15 @@ void GridMap::clearAndInflateLocalMap()
   if (mp_.virtual_ceil_height_ > -0.5)
   {
     int ceil_id = floor((mp_.virtual_ceil_height_ - mp_.map_origin_(2)) * mp_.resolution_inv_);
+    int max_z_id = mp_.map_voxel_num_(2) - 1;  // Top of the map
     for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
       for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y)
       {
-        md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
+        // Mark all layers from ceiling to top of map as occupied
+        for (int z = ceil_id; z <= max_z_id; ++z)
+        {
+          md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 1;
+        }
       }
   }
 }
