@@ -45,8 +45,19 @@ namespace ego_planner
     static int count = 0;
     std::cout << endl << "[Bezier replan]: -------------------------------------" << count++ << std::endl;
     cout.precision(3);
+    
+    // CRITICAL: Clamp heights to prevent flying over walls
+    Eigen::Vector3d map_max = grid_map_->getMapMaxBoundary();
+    Eigen::Vector3d map_min = grid_map_->getMapMinBoundary();
+    double max_flight_height = std::min(map_max.z() - 0.5, 2.5);
+    double min_flight_height = std::max(map_min.z() + 0.3, 0.3);
+    
+    start_pt.z() = std::max(min_flight_height, std::min(max_flight_height, start_pt.z()));
+    local_target_pt.z() = std::max(min_flight_height, std::min(max_flight_height, local_target_pt.z()));
+    
     cout << "start: " << start_pt.transpose() << ", " << start_vel.transpose() 
          << "\ngoal:" << local_target_pt.transpose() << ", " << local_target_vel.transpose() << endl;
+    cout << "height limits: [" << min_flight_height << ", " << max_flight_height << "]" << endl;
 
     if ((start_pt - local_target_pt).norm() < 0.2)
     {
@@ -116,9 +127,13 @@ namespace ego_planner
           point_set.clear();
           flag_too_far = false;
           Eigen::Vector3d last_pt = gl_traj.evaluate(0);
+          // Clamp initial point height
+          last_pt.z() = std::max(min_flight_height, std::min(max_flight_height, last_pt.z()));
           for (t = 0; t < time; t += ts)
           {
             Eigen::Vector3d pt = gl_traj.evaluate(t);
+            // CRITICAL: Clamp each trajectory point to height limits
+            pt.z() = std::max(min_flight_height, std::min(max_flight_height, pt.z()));
             if ((last_pt - pt).norm() > pp_.ctrl_pt_dist * 1.5)
             {
               flag_too_far = true;
@@ -213,8 +228,20 @@ namespace ego_planner
       }
     } while (flag_regenerate);
 
+    // CRITICAL: Clamp all point heights to flight limits
+    for (auto& pt : point_set)
+    {
+      pt.z() = std::max(min_flight_height, std::min(max_flight_height, pt.z()));
+    }
+
     Eigen::MatrixXd ctrl_pts;
     PiecewiseBezier::parameterizeToBezier(ts, point_set, start_end_derivatives, ctrl_pts);
+    
+    // Also clamp control points z-coordinates
+    for (int i = 0; i < ctrl_pts.cols(); ++i)
+    {
+      ctrl_pts(2, i) = std::max(min_flight_height, std::min(max_flight_height, ctrl_pts(2, i)));
+    }
 
     vector<vector<Eigen::Vector3d>> a_star_pathes;
     a_star_pathes = bezier_optimizer_rebound_->initControlPoints(ctrl_pts, true);
@@ -230,10 +257,101 @@ namespace ego_planner
     /*** STEP 2: OPTIMIZE ***/
     bool flag_step_1_success = bezier_optimizer_rebound_->BezierOptimizeTrajRebound(ctrl_pts, ts);
     cout << "first_optimize_step_success=" << flag_step_1_success << endl;
+    
+    // 如果直接优化失败，尝试使用 A* 搜索安全路径作为初始轨迹
     if (!flag_step_1_success)
     {
-      continous_failures_count_++;
-      return false;
+      ROS_WARN("[Planner] Direct optimization failed, trying A* path search...");
+      
+      // 使用 A* 搜索从起点到目标点的安全路径
+      double a_star_step = grid_map_->getResolution() * 2.0;  // 搜索步长
+      bool a_star_success = bezier_optimizer_rebound_->a_star_->AstarSearch(a_star_step, start_pt, local_target_pt);
+      
+      if (a_star_success)
+      {
+        ROS_INFO("[Planner] A* found a safe path, re-optimizing...");
+        
+        // 获取 A* 路径
+        std::vector<Eigen::Vector3d> a_star_path = bezier_optimizer_rebound_->a_star_->getPath();
+        
+        // 简化路径点（降采样）
+        std::vector<Eigen::Vector3d> sparse_path;
+        sparse_path.push_back(start_pt);  // 确保起点正确
+        
+        double min_dist = pp_.ctrl_pt_dist * 0.8;  // 控制点间最小距离
+        Eigen::Vector3d last_added = start_pt;
+        
+        for (size_t i = 1; i < a_star_path.size() - 1; ++i)
+        {
+          if ((a_star_path[i] - last_added).norm() >= min_dist)
+          {
+            // Clamp A* path point heights
+            Eigen::Vector3d clamped_pt = a_star_path[i];
+            clamped_pt.z() = std::max(min_flight_height, std::min(max_flight_height, clamped_pt.z()));
+            sparse_path.push_back(clamped_pt);
+            last_added = clamped_pt;
+          }
+        }
+        sparse_path.push_back(local_target_pt);  // 确保终点正确
+        
+        // 确保至少有7个控制点
+        while (sparse_path.size() < 7)
+        {
+          // 在相邻点之间插值
+          std::vector<Eigen::Vector3d> new_path;
+          for (size_t i = 0; i < sparse_path.size() - 1; ++i)
+          {
+            new_path.push_back(sparse_path[i]);
+            Eigen::Vector3d mid = (sparse_path[i] + sparse_path[i+1]) / 2.0;
+            // Clamp interpolated point height
+            mid.z() = std::max(min_flight_height, std::min(max_flight_height, mid.z()));
+            new_path.push_back(mid);
+          }
+          new_path.push_back(sparse_path.back());
+          sparse_path = new_path;
+        }
+        
+        // 使用 A* 路径重新生成控制点
+        std::vector<Eigen::Vector3d> a_star_derivatives;
+        a_star_derivatives.push_back(start_vel);  // 起始速度
+        a_star_derivatives.push_back(local_target_vel);  // 终点速度
+        a_star_derivatives.push_back(start_acc);  // 起始加速度
+        a_star_derivatives.push_back(Eigen::Vector3d::Zero());  // 终点加速度
+        
+        Eigen::MatrixXd a_star_ctrl_pts;
+        PiecewiseBezier::parameterizeToBezier(ts, sparse_path, a_star_derivatives, a_star_ctrl_pts);
+        
+        // Clamp A* control points height
+        for (int i = 0; i < a_star_ctrl_pts.cols(); ++i)
+        {
+          a_star_ctrl_pts(2, i) = std::max(min_flight_height, std::min(max_flight_height, a_star_ctrl_pts(2, i)));
+        }
+        
+        // 重新初始化控制点和约束
+        bezier_optimizer_rebound_->initControlPoints(a_star_ctrl_pts, true);
+        
+        // 可视化 A* 路径
+        visualization_->displayInitPathList(sparse_path, 0.15, 1);
+        
+        // 重新优化
+        flag_step_1_success = bezier_optimizer_rebound_->BezierOptimizeTrajRebound(a_star_ctrl_pts, ts);
+        cout << "A* guided optimization success=" << flag_step_1_success << endl;
+        
+        if (flag_step_1_success)
+        {
+          ctrl_pts = a_star_ctrl_pts;  // 使用 A* 引导的控制点
+        }
+      }
+      else
+      {
+        ROS_WARN("[Planner] A* path search also failed!");
+      }
+      
+      if (!flag_step_1_success)
+      {
+        continous_failures_count_++;
+        return false;
+      }
     }
 
     t_opt = ros::Time::now() - t_start;
@@ -289,16 +407,30 @@ namespace ego_planner
   bool EGOPlannerManager::planGlobalTrajWaypoints(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                                   const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
   {
+    // CRITICAL: Get height limits from grid_map to prevent flying over walls
+    Eigen::Vector3d map_max = grid_map_->getMapMaxBoundary();
+    Eigen::Vector3d map_min = grid_map_->getMapMinBoundary();
+    double max_flight_height = std::min(map_max.z() - 0.5, 2.5);  // At least 0.5m below ceiling, max 2.5m
+    double min_flight_height = std::max(map_min.z() + 0.3, 0.3);  // At least 0.3m above ground
+    
+    ROS_INFO("[PlannerManager] Height limits: min=%.2f, max=%.2f", min_flight_height, max_flight_height);
+    
     vector<Eigen::Vector3d> points;
-    points.push_back(start_pos);
+    // Clamp start position height
+    Eigen::Vector3d clamped_start = start_pos;
+    clamped_start.z() = std::max(min_flight_height, std::min(max_flight_height, clamped_start.z()));
+    points.push_back(clamped_start);
 
     for (size_t wp_i = 0; wp_i < waypoints.size(); wp_i++)
     {
-      points.push_back(waypoints[wp_i]);
+      // Clamp each waypoint height
+      Eigen::Vector3d wp = waypoints[wp_i];
+      wp.z() = std::max(min_flight_height, std::min(max_flight_height, wp.z()));
+      points.push_back(wp);
     }
 
     double total_len = 0;
-    total_len += (start_pos - waypoints[0]).norm();
+    total_len += (clamped_start - points[1]).norm();
     for (size_t i = 0; i < waypoints.size() - 1; i++)
     {
       total_len += (waypoints[i + 1] - waypoints[i]).norm();
@@ -357,9 +489,21 @@ namespace ego_planner
   bool EGOPlannerManager::planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                          const Eigen::Vector3d &end_pos, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
   {
+    // CRITICAL: Get height limits from grid_map to prevent flying over walls
+    Eigen::Vector3d map_max = grid_map_->getMapMaxBoundary();
+    Eigen::Vector3d map_min = grid_map_->getMapMinBoundary();
+    double max_flight_height = std::min(map_max.z() - 0.5, 2.5);  // At least 0.5m below ceiling, max 2.5m
+    double min_flight_height = std::max(map_min.z() + 0.3, 0.3);  // At least 0.3m above ground
+    
+    // Clamp positions
+    Eigen::Vector3d clamped_start = start_pos;
+    Eigen::Vector3d clamped_end = end_pos;
+    clamped_start.z() = std::max(min_flight_height, std::min(max_flight_height, clamped_start.z()));
+    clamped_end.z() = std::max(min_flight_height, std::min(max_flight_height, clamped_end.z()));
+    
     vector<Eigen::Vector3d> points;
-    points.push_back(start_pos);
-    points.push_back(end_pos);
+    points.push_back(clamped_start);
+    points.push_back(clamped_end);
 
     vector<Eigen::Vector3d> inter_points;
     const double dist_thresh = 4.0;
@@ -375,6 +519,8 @@ namespace ego_planner
         for (int j = 1; j < id_num; ++j)
         {
           Eigen::Vector3d inter_pt = points.at(i) * (1.0 - double(j) / id_num) + points.at(i + 1) * double(j) / id_num;
+          // Also clamp interpolated points
+          inter_pt.z() = std::max(min_flight_height, std::min(max_flight_height, inter_pt.z()));
           inter_points.push_back(inter_pt);
         }
       }

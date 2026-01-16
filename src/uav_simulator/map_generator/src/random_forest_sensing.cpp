@@ -420,87 +420,163 @@ void clickCallback(const geometry_msgs::PoseStamped& msg) {
 void GenerateFixedCrossWallMap() {
   pcl::PointXYZ pt;
   
-  // Map parameters: 20x20 meters, centered at origin
-  double map_size = 20.0;
+  // Corridor parameters: 40x10x3 meters, centered at origin
+  double corridor_length = 40.0;  // X direction
+  double corridor_width = 10.0;   // Y direction
+  double corridor_height = _z_size;
   double wall_thickness = 0.3;
-  double wall_height = _z_size;  // Use full map height to prevent flying over walls
-  double door_width = 2.0;  // Width of each door opening
   
-  // Generate horizontal wall (along X-axis at y=0)
-  for (double x = -map_size/2; x <= map_size/2; x += _resolution) {
-    for (double y = -wall_thickness/2; y <= wall_thickness/2; y += _resolution) {
-      for (double z = 0.0; z <= wall_height; z += _resolution) {
-        // Skip door openings at x = -door_width/2 to door_width/2
-        if (fabs(x+6) > door_width/2) {
+  // Generate corridor boundary walls
+  // Left wall (y = -corridor_width/2)
+  for (double x = -corridor_length/2; x <= corridor_length/2; x += _resolution) {
+    for (double y = -corridor_width/2 - wall_thickness; y <= -corridor_width/2; y += _resolution) {
+      for (double z = 0; z <= corridor_height; z += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // Right wall (y = corridor_width/2)
+  for (double x = -corridor_length/2; x <= corridor_length/2; x += _resolution) {
+    for (double y = corridor_width/2; y <= corridor_width/2 + wall_thickness; y += _resolution) {
+      for (double z = 0; z <= corridor_height; z += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // Front wall (x = -corridor_length/2)
+  for (double x = -corridor_length/2 - wall_thickness; x <= -corridor_length/2; x += _resolution) {
+    for (double y = -corridor_width/2; y <= corridor_width/2; y += _resolution) {
+      for (double z = 0; z <= corridor_height; z += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // Back wall (x = corridor_length/2)
+  for (double x = corridor_length/2; x <= corridor_length/2 + wall_thickness; x += _resolution) {
+    for (double y = -corridor_width/2; y <= corridor_width/2; y += _resolution) {
+      for (double z = 0; z <= corridor_height; z += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // ========== Generate obstacles in corridor ==========
+  
+  // Obstacle 1: 3m high cylinder at x=-12
+  double cyl1_x = -14.0;
+  double cyl1_y = 2.0;
+  double cyl1_radius = 1.5;
+  double cyl1_height = 3.0;
+  for (double x = cyl1_x - cyl1_radius; x <= cyl1_x + cyl1_radius; x += _resolution) {
+    for (double y = cyl1_y - cyl1_radius; y <= cyl1_y + cyl1_radius; y += _resolution) {
+      if (sqrt(pow(x - cyl1_x, 2) + pow(y - cyl1_y, 2)) <= cyl1_radius) {
+        for (double z = 0; z <= cyl1_height; z += _resolution) {
           pt.x = x;
           pt.y = y;
           pt.z = z;
-          cloudMap.points.push_back(pt);
+          cloudMap.push_back(pt);
         }
       }
     }
   }
   
-  // Generate vertical wall (along Y-axis at x=0)
-  for (double y = -map_size/2; y <= map_size/2; y += _resolution) {
-    for (double x = -wall_thickness/2; x <= wall_thickness/2; x += _resolution) {
-      for (double z = 0.0; z <= wall_height; z += _resolution) {
-        // Skip door openings at y = -door_width/2 to door_width/2
-        if (fabs(y+5) > door_width/2) {
+  // Obstacle 2: 3m high cube at x=-6
+  double cube1_x = -6.0;
+  double cube1_y = 0.0;
+  double cube1_size = 1.5;
+  double cube1_height = 3.0;
+  for (double x = cube1_x - cube1_size/2; x <= cube1_x + cube1_size/2; x += _resolution) {
+    for (double y = cube1_y - cube1_size/2; y <= cube1_y + cube1_size/2; y += _resolution) {
+      for (double z = 0; z <= cube1_height; z += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // Obstacle 3: 1m high rectangular box at x=0
+  double box1_x = 0.0;
+  double box1_y = 2.5;
+  double box1_length = 2.0;  // X direction
+  double box1_width = 1.0;   // Y direction
+  double box1_height = 1.0;
+  for (double x = box1_x - box1_length/2; x <= box1_x + box1_length/2; x += _resolution) {
+    for (double y = box1_y - box1_width/2; y <= box1_y + box1_width/2; y += _resolution) {
+      for (double z = 0; z <= box1_height; z += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // Obstacle 4: 1m diameter sphere suspended at 2m height, center at x=6
+  double sphere1_x = 6.0;
+  double sphere1_y = 0.0;
+  double sphere1_z_center = 2.5;  // Center at 2.5m, so bottom at 2m, top at 3m
+  double sphere1_radius = 1.2;
+  for (double x = sphere1_x - sphere1_radius; x <= sphere1_x + sphere1_radius; x += _resolution) {
+    for (double y = sphere1_y - sphere1_radius; y <= sphere1_y + sphere1_radius; y += _resolution) {
+      for (double z = sphere1_z_center - sphere1_radius; z <= sphere1_z_center + sphere1_radius; z += _resolution) {
+        double dist = sqrt(pow(x - sphere1_x, 2) + pow(y - sphere1_y, 2) + pow(z - sphere1_z_center, 2));
+        if (dist <= sphere1_radius) {
           pt.x = x;
           pt.y = y;
           pt.z = z;
-          cloudMap.points.push_back(pt);
+          cloudMap.push_back(pt);
         }
       }
     }
   }
   
-  // Generate boundary walls to create enclosed space
-  // Bottom wall (y = -map_size/2)
-  for (double x = -map_size/2; x <= map_size/2; x += _resolution) {
-    for (double y = -map_size/2; y <= -map_size/2 + wall_thickness; y += _resolution) {
-      for (double z = 0.0; z <= wall_height; z += _resolution) {
+  // Obstacle 5: 1m cube suspended at 2m height, center at x=12
+  double cube2_x = 10.0;
+  double cube2_y = -2.5;
+  double cube2_z_bottom = 2.0;  // Bottom at 2m
+  double cube2_size = 1.0;
+  for (double x = cube2_x - cube2_size/2; x <= cube2_x + cube2_size/2; x += _resolution) {
+    for (double y = cube2_y - cube2_size/2; y <= cube2_y + cube2_size/2; y += _resolution) {
+      for (double z = cube2_z_bottom; z <= cube2_z_bottom + cube2_size; z += _resolution) {
         pt.x = x;
         pt.y = y;
         pt.z = z;
-        cloudMap.points.push_back(pt);
+        cloudMap.push_back(pt);
       }
     }
   }
   
-  // Top wall (y = map_size/2)
-  for (double x = -map_size/2; x <= map_size/2; x += _resolution) {
-    for (double y = map_size/2 - wall_thickness; y <= map_size/2; y += _resolution) {
-      for (double z = 0.0; z <= wall_height; z += _resolution) {
-        pt.x = x;
-        pt.y = y;
-        pt.z = z;
-        cloudMap.points.push_back(pt);
-      }
-    }
-  }
-  
-  // Left wall (x = -map_size/2)
-  for (double y = -map_size/2; y <= map_size/2; y += _resolution) {
-    for (double x = -map_size/2; x <= -map_size/2 + wall_thickness; x += _resolution) {
-      for (double z = 0.0; z <= wall_height; z += _resolution) {
-        pt.x = x;
-        pt.y = y;
-        pt.z = z;
-        cloudMap.points.push_back(pt);
-      }
-    }
-  }
-  
-  // Right wall (x = map_size/2)
-  for (double y = -map_size/2; y <= map_size/2; y += _resolution) {
-    for (double x = map_size/2 - wall_thickness; x <= map_size/2; x += _resolution) {
-      for (double z = 0.0; z <= wall_height; z += _resolution) {
-        pt.x = x;
-        pt.y = y;
-        pt.z = z;
-        cloudMap.points.push_back(pt);
+  // Obstacle 6: Another 3m high cylinder at x=16 (near end)
+  double cyl2_x = 16.0;
+  double cyl2_y = 1.5;
+  double cyl2_radius = 0.6;
+  double cyl2_height = 3.0;
+  for (double x = cyl2_x - cyl2_radius; x <= cyl2_x + cyl2_radius; x += _resolution) {
+    for (double y = cyl2_y - cyl2_radius; y <= cyl2_y + cyl2_radius; y += _resolution) {
+      if (sqrt(pow(x - cyl2_x, 2) + pow(y - cyl2_y, 2)) <= cyl2_radius) {
+        for (double z = 0; z <= cyl2_height; z += _resolution) {
+          pt.x = x;
+          pt.y = y;
+          pt.z = z;
+          cloudMap.push_back(pt);
+        }
       }
     }
   }
@@ -509,7 +585,7 @@ void GenerateFixedCrossWallMap() {
   cloudMap.height = 1;
   cloudMap.is_dense = true;
   
-  ROS_WARN("Finished generating fixed cross-wall map with 4 door openings");
+  ROS_WARN("Finished generating corridor map (40x10x3m) with 6 obstacles");
   
   kdtreeLocalMap.setInputCloud(cloudMap.makeShared());
   _map_ok = true;
@@ -773,6 +849,8 @@ int main(int argc, char** argv) {
   // Select map generation based on parameter
   if (map_type == "fixed_cross") {
     GenerateFixedObstacleMap();
+  } else if (map_type == "corridor") {
+    GenerateFixedCrossWallMap();  // Now generates corridor map
   } else {
     // RandomMapGenerate();
     RandomMapGenerateCylinder();

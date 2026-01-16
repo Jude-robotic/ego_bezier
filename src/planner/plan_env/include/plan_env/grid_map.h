@@ -176,6 +176,10 @@ public:
   inline double getResolution();
   Eigen::Vector3d getOrigin();
   int getVoxelNum();
+  
+  // Get map boundaries for height limiting
+  inline Eigen::Vector3d getMapMaxBoundary() { return mp_.map_max_boundary_; }
+  inline Eigen::Vector3d getMapMinBoundary() { return mp_.map_min_boundary_; }
 
   typedef std::shared_ptr<GridMap> Ptr;
 
@@ -317,6 +321,13 @@ inline int GridMap::getOccupancy(Eigen::Vector3d pos) {
 }
 
 inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos) {
+  // CRITICAL FIX: If position is above or below map z-boundary, treat as OCCUPIED
+  // This prevents drone from flying over walls by going above the map
+  if (pos(2) > mp_.map_max_boundary_(2) - 1e-4 || pos(2) < mp_.map_min_boundary_(2) + 1e-4) {
+    return 1;  // Treat as occupied - cannot fly above/below map
+  }
+  
+  // For x/y out of bounds, return unknown (-1)
   if (!isInMap(pos)) return -1;
 
   Eigen::Vector3i id;

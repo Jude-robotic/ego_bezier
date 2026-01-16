@@ -63,14 +63,14 @@ namespace ego_planner
       // to the control point (used in distance cost computation).
       if (grid_map_) {
         double res = grid_map_->getResolution();
-        double max_search = std::max(3.0, cps_.clearance * 2.0); // search range
+        double max_search = std::max(5.0, cps_.clearance * 4.0); // Increased search range for wall obstacles
         int steps = std::max(4, int(max_search / res));
 
         // sampling directions: azimuthal around XY plane, with a few elevations
         std::vector<Eigen::Vector3d> dirs;
-        int azimuth_samples = 16;
-        // Add vertical sampling: 0° (horizontal), ±17°, ±45°, ±90° (up/down)
-        std::vector<double> elevs = {0.0, 0.3, -0.3, 0.785, -0.785, 1.57, -1.57};
+        int azimuth_samples = 24; // Increased for better wall detection
+        // Add vertical sampling: more angles for better 3D coverage
+        std::vector<double> elevs = {0.0, 0.15, -0.15, 0.3, -0.3, 0.5, -0.5, 0.785, -0.785, 1.2, -1.2, 1.57, -1.57};
         for (int ea = 0; ea < (int)elevs.size(); ++ea) {
           double el = elevs[ea];
           for (int a = 0; a < azimuth_samples; ++a) {
@@ -376,14 +376,16 @@ namespace ego_planner
     {
       Eigen::Vector3d cp = cps_.points.col(i);
       
-      // Check if point is in occupied or inflated space
-      if (!grid_map_->isInMap(cp)) continue;
+      // CRITICAL: Check z boundary violation - don't skip, treat as collision!
+      // This prevents drone from flying over walls
+      bool z_boundary_violation = (cp.z() > grid_map_->getMapMaxBoundary().z() - 0.1 || 
+                                   cp.z() < grid_map_->getMapMinBoundary().z() + 0.1);
       
-      // Check occupancy directly - if occupied, we have a collision
+      // Check occupancy directly - if occupied or z-boundary violated, we have a collision
       int occ = grid_map_->getInflateOccupancy(cp);
       
-      // If in occupied space, we have a collision
-      if (occ > 0)
+      // If in occupied space or violated z-boundary, we have a collision
+      if (occ > 0 || z_boundary_violation)
       {
         collision_detected = true;
         max_clearance_violation = std::max(max_clearance_violation, cps_.clearance);
@@ -500,10 +502,19 @@ namespace ego_planner
     bool success = (result == lbfgs::LBFGS_CONVERGENCE || result == lbfgs::LBFGS_STOP ||
                     result == lbfgs::LBFGS_ALREADY_MINIMIZED);
     
-    if (result == lbfgs::LBFGSERR_MAXIMUMITERATION && final_cost < 20.0) //迭代上限超过，但cost低，接受结果
+    // Check if trajectory has collision by examining distance cost
+    // Only accept if final_cost is relatively low OR distance cost portion is acceptable
+    if (result == lbfgs::LBFGSERR_MAXIMUMITERATION)
     {
-      std::cout << "[BezierOptimizer] Max iterations reached but cost is low, accepting result" << std::endl;
-      success = true;
+      // Estimate if the trajectory is collision-free by checking if cost is dominated by smoothness
+      // If final_cost < 100, it's likely collision-free (dist cost would be ~5000 if in collision)
+      if (final_cost < 100.0) {
+        std::cout << "[BezierOptimizer] Max iterations but cost low enough, accepting" << std::endl;
+        success = true;
+      } else {
+        std::cout << "[BezierOptimizer] Max iterations and high cost, trajectory likely in collision" << std::endl;
+        success = false;
+      }
     }
     
     return success;

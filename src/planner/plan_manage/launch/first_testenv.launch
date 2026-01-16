@@ -50,17 +50,17 @@
     <!-- Waypoint 1: bottom-left quadrant -->
     <arg name="point0_x" value="-7.5" />
     <arg name="point0_y" value="-7.5" />
-    <arg name="point0_z" value="1.0" />
+    <arg name="point0_z" value="1.5" />
 
     <!-- Waypoint 2: top-left quadrant -->
     <arg name="point1_x" value="-7.5" />
     <arg name="point1_y" value="7.5" />
-    <arg name="point1_z" value="1.0" />
+    <arg name="point1_z" value="0.5" />
 
     <!-- Waypoint 3: top-right quadrant -->
     <arg name="point2_x" value="7.5" />
     <arg name="point2_y" value="7.5" />
-    <arg name="point2_z" value="1.0" />
+    <arg name="point2_z" value="1.5" />
 
     <!-- Waypoint 4: return to starting position (bottom-right) for hovering -->
     <arg name="point3_x" value="7.5" />

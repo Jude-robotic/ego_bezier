@@ -1,12 +1,6 @@
 /**
  * @file ego_replan_fsm.cpp
  * @brief Implementation of EGO Replanning FSM with Piecewise Bezier Curves
- *        Enhanced with mandatory waypoint reaching functionality
- * 
- * 核心改进: 航点强制到达机制
- * - 航点成为无人机真实轨迹必须到达的点
- * - 基于无人机实际位置检测航点到达
- * - 只有实际到达航点后才切换到下一个航点
  */
 
 #include <plan_manage/ego_replan_fsm.h>
@@ -28,13 +22,7 @@ namespace ego_planner
     nh.param("fsm/planning_horizon", planning_horizen_, -1.0);
     nh.param("fsm/planning_horizen_time", planning_horizen_time_, -1.0);
     nh.param("fsm/emergency_time_", emergency_time_, 1.0);
-    nh.param("fsm/goal_reach_thresh", goal_reach_thresh_, 1.0);
-    
-    /* 航点强制到达参数 */
-    nh.param("fsm/use_mandatory_waypoints", use_mandatory_waypoints_, true);
-    nh.param("fsm/waypoint_reach_thresh", waypoint_reach_thresh_, 0.8);
-    nh.param("fsm/max_waypoint_replan_attempts", max_waypoint_replan_attempts_, 20);
-    nh.param("fsm/max_waypoint_approach_time", max_waypoint_approach_time_, 60.0);
+    nh.param("fsm/goal_reach_thresh", goal_reach_thresh_, 1.0);  // 目标点到达判断阈值
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
     for (int i = 0; i < waypoint_num_; i++)
@@ -43,14 +31,6 @@ namespace ego_planner
       nh.param("fsm/waypoint" + to_string(i) + "_y", waypoints_[i][1], -1.0);
       nh.param("fsm/waypoint" + to_string(i) + "_z", waypoints_[i][2], -1.0);
     }
-    
-    /* 初始化航点追踪系统 */
-    current_waypoint_idx_ = 0;
-    waypoint_reached_ = false;
-    all_waypoints_completed_ = false;
-    waypoint_replan_count_ = 0;
-    waypoint_approach_time_ = 0.0;
-    last_waypoint_check_time_ = ros::Time::now();
 
     /* Initialize main modules */
     visualization_.reset(new PlanningVisualization(nh));
@@ -60,9 +40,6 @@ namespace ego_planner
     /* Callbacks */
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &EGOReplanFSM::execFSMCallback, this);
     safety_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::checkCollisionCallback, this);
-    
-    /* 航点检测定时器 - 每0.1秒检测一次是否到达航点 */
-    waypoint_check_timer_ = nh.createTimer(ros::Duration(0.1), &EGOReplanFSM::waypointCheckCallback, this);
 
     odom_sub_ = nh.subscribe("/odom_world", 1, &EGOReplanFSM::odometryCallback, this);
 
@@ -71,11 +48,6 @@ namespace ego_planner
     
     // 为多机协同系统发布Path格式的轨迹（使用uav_0命名空间）
     traj_path_pub_ = nh.advertise<nav_msgs::Path>("/uav_0/planning/trajectory", 10);
-    
-    /* 航点状态发布器 */
-    waypoint_status_pub_ = nh.advertise<std_msgs::Int32>("/planning/waypoint_status", 10);
-    current_waypoint_pub_ = nh.advertise<std_msgs::Int32>("/planning/current_waypoint_idx", 10);
-    waypoint_distance_pub_ = nh.advertise<std_msgs::Float32>("/planning/waypoint_distance", 10);
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
       waypoint_sub_ = nh.subscribe("/waypoint_generator/waypoints", 1, &EGOReplanFSM::waypointCallback, this);
@@ -84,35 +56,10 @@ namespace ego_planner
       ros::Duration(1.0).sleep();
       while (ros::ok() && !have_odom_)
         ros::spinOnce();
-      initWaypointTracking();
       planGlobalTrajbyGivenWps();
     }
     else
       cout << "Wrong target_type_ value! target_type_=" << target_type_ << endl;
-  }
-  
-  void EGOReplanFSM::initWaypointTracking()
-  {
-    /* 初始化航点列表 */
-    all_waypoints_.clear();
-    for (int i = 0; i < waypoint_num_; i++)
-    {
-      Eigen::Vector3d wp(waypoints_[i][0], waypoints_[i][1], waypoints_[i][2]);
-      all_waypoints_.push_back(wp);
-    }
-    
-    current_waypoint_idx_ = 0;
-    waypoint_reached_ = false;
-    all_waypoints_completed_ = false;
-    waypoint_replan_count_ = 0;
-    waypoint_approach_time_ = 0.0;
-    
-    if (!all_waypoints_.empty())
-    {
-      current_target_waypoint_ = all_waypoints_[0];
-      ROS_INFO("[WaypointTracker] Initialized with %zu waypoints. First target: (%.2f, %.2f, %.2f)",
-               all_waypoints_.size(), current_target_waypoint_.x(), current_target_waypoint_.y(), current_target_waypoint_.z());
-    }
   }
 
   void EGOReplanFSM::planGlobalTrajbyGivenWps()
@@ -125,26 +72,13 @@ namespace ego_planner
       wps[i](2) = waypoints_[i][2];
       end_pt_ = wps.back();
     }
-    
-    /* 航点强制到达模式：设置第一个航点为当前目标 */
-    if (use_mandatory_waypoints_ && !wps.empty())
-    {
-      current_target_waypoint_ = wps[0];
-      ROS_INFO("[WaypointTracker] Starting mandatory waypoint mode. Target waypoint 0: (%.2f, %.2f, %.2f)",
-               current_target_waypoint_.x(), current_target_waypoint_.y(), current_target_waypoint_.z());
-    }
-    
     bool success = planner_manager_->planGlobalTrajWaypoints(odom_pos_, Eigen::Vector3d::Zero(), 
                                                               Eigen::Vector3d::Zero(), wps, 
                                                               Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     for (size_t i = 0; i < (size_t)waypoint_num_; i++)
     {
-      // 当前目标航点用红色显示，其他用青色
-      Eigen::Vector4d color = (use_mandatory_waypoints_ && (int)i == current_waypoint_idx_) 
-                              ? Eigen::Vector4d(1, 0, 0, 1) 
-                              : Eigen::Vector4d(0, 0.5, 0.5, 1);
-      visualization_->displayGoalPoint(wps[i], color, 0.3, i);
+      visualization_->displayGoalPoint(wps[i], Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, i);
       ros::Duration(0.001).sleep();
     }
 
@@ -336,95 +270,33 @@ namespace ego_planner
       t_cur = min(info->duration_, t_cur);
 
       Eigen::Vector3d pos = info->position_traj_.evaluateT(t_cur);
-      
-      /* ========== 航点强制到达模式 ========== */
-      if (use_mandatory_waypoints_ && !all_waypoints_completed_)
+
+      // 轨迹时间结束判断 - 使用实际位置进行辅助验证
+      if (t_cur > info->duration_ - 1e-2)
       {
-        // 检查是否到达当前目标航点（基于实际位置）
-        double dist_to_waypoint = (odom_pos_ - current_target_waypoint_).norm();
-        
-        // 轨迹时间结束但未到达航点：重规划继续接近
-        if (t_cur > info->duration_ - 1e-2)
-        {
-          if (dist_to_waypoint > waypoint_reach_thresh_)
-          {
-            waypoint_replan_count_++;
-            ROS_INFO("[WaypointTracker] Trajectory ended but waypoint %d not reached. Distance: %.2f, Replanning... (attempt %d)",
-                     current_waypoint_idx_, dist_to_waypoint, waypoint_replan_count_);
-            
-            // 检查是否超过最大重规划次数
-            if (waypoint_replan_count_ > max_waypoint_replan_attempts_)
-            {
-              ROS_WARN("[WaypointTracker] Max replan attempts reached for waypoint %d. Trying direct approach.",
-                       current_waypoint_idx_);
-              if (planDirectToWaypoint())
-              {
-                have_new_target_ = true;
-                changeFSMExecState(GEN_NEW_TRAJ, "DIRECT_APPROACH");
-              }
-              else
-              {
-                changeFSMExecState(REPLAN_TRAJ, "FSM");
-              }
-              return;
-            }
-            
-            // 重新规划到当前航点
-            changeFSMExecState(REPLAN_TRAJ, "FSM");
-            return;
-          }
-          else
-          {
-            // 到达当前航点，waypointCheckCallback会处理切换
-            return;
-          }
-        }
-        
-        // 检查距离当前航点的进度
-        if (dist_to_waypoint < no_replan_thresh_)
-        {
-          // 接近航点，继续执行
-          return;
-        }
-        else if ((info->start_pos_ - pos).norm() < replan_thresh_)
-        {
-          return;
-        }
-        else
+        // 检查实际位置到目标的距离
+        double actual_dist = (end_pt_ - odom_pos_).norm();
+        // 如果距离目标还比较远（超过到达阈值），需要重规划继续接近
+        if (actual_dist > goal_reach_thresh_)
         {
           changeFSMExecState(REPLAN_TRAJ, "FSM");
+          return;
         }
+        have_target_ = false;
+        changeFSMExecState(WAIT_TARGET, "FSM");
+        return;
+      }
+      else if ((end_pt_ - pos).norm() < no_replan_thresh_)
+      {
+        return;
+      }
+      else if ((info->start_pos_ - pos).norm() < replan_thresh_)
+      {
+        return;
       }
       else
       {
-        /* ========== 原始模式（非强制航点） ========== */
-        // 轨迹时间结束判断 - 使用实际位置进行辅助验证
-        if (t_cur > info->duration_ - 1e-2)
-        {
-          // 检查实际位置到目标的距离
-          double actual_dist = (end_pt_ - odom_pos_).norm();
-          // 如果距离目标还比较远（超过到达阈值），需要重规划继续接近
-          if (actual_dist > goal_reach_thresh_)
-          {
-            changeFSMExecState(REPLAN_TRAJ, "FSM");
-            return;
-          }
-          have_target_ = false;
-          changeFSMExecState(WAIT_TARGET, "FSM");
-          return;
-        }
-        else if ((end_pt_ - pos).norm() < no_replan_thresh_)
-        {
-          return;
-        }
-        else if ((info->start_pos_ - pos).norm() < replan_thresh_)
-        {
-          return;
-        }
-        else
-        {
-          changeFSMExecState(REPLAN_TRAJ, "FSM");
-        }
+        changeFSMExecState(REPLAN_TRAJ, "FSM");
       }
       break;
     }
@@ -441,13 +313,6 @@ namespace ego_planner
           changeFSMExecState(GEN_NEW_TRAJ, "FSM");
       }
       flag_escape_emergency_ = false;
-      break;
-    }
-    
-    case REACHING_WAYPOINT:
-    {
-      // 预留状态：正在逼近航点（当前由waypointCheckCallback处理）
-      // 可以在此添加更精细的航点逼近控制
       break;
     }
     }
@@ -607,108 +472,6 @@ namespace ego_planner
     // 这样可以避免因轨迹跟踪误差导致的进度错误前移
     Eigen::Vector3d reference_pos = odom_pos_;
     
-    /* ========== 航点强制到达模式：限制局部目标不超过当前航点 ========== */
-    if (use_mandatory_waypoints_ && !all_waypoints_completed_ && 
-        current_waypoint_idx_ < (int)all_waypoints_.size())
-    {
-      // 计算到当前航点的距离
-      double dist_to_current_waypoint = (current_target_waypoint_ - odom_pos_).norm();
-      
-      // 如果当前航点在规划视野内，直接将其设为局部目标
-      if (dist_to_current_waypoint <= planning_horizen_)
-      {
-        local_target_pt_ = current_target_waypoint_;
-        
-        // 如果接近航点，速度应该降低以便精确到达
-        if (dist_to_current_waypoint < planning_horizen_ * 0.5)
-        {
-          local_target_vel_ = Eigen::Vector3d::Zero();
-        }
-        else
-        {
-          // 设置一个指向航点的速度方向
-          Eigen::Vector3d dir = (current_target_waypoint_ - odom_pos_).normalized();
-          local_target_vel_ = dir * planner_manager_->pp_.max_vel_ * 0.5;
-        }
-        
-        ROS_DEBUG("[WaypointTracker] Local target set to current waypoint %d: (%.2f, %.2f, %.2f), dist: %.2f",
-                  current_waypoint_idx_, local_target_pt_.x(), local_target_pt_.y(), local_target_pt_.z(),
-                  dist_to_current_waypoint);
-        return;
-      }
-      
-      // 当前航点超出规划视野，使用全局轨迹找中间点，但限制不超过当前航点
-      // 首先找到全局轨迹上最接近当前航点的时间点
-      double waypoint_t = planner_manager_->global_data_.global_duration_;
-      double min_dist_to_wp = 9999;
-      for (double t_search = 0.0; 
-           t_search < planner_manager_->global_data_.global_duration_; t_search += t_step)
-      {
-        Eigen::Vector3d pos_t = planner_manager_->global_data_.getPosition(t_search);
-        double dist = (pos_t - current_target_waypoint_).norm();
-        if (dist < min_dist_to_wp)
-        {
-          min_dist_to_wp = dist;
-          waypoint_t = t_search;
-        }
-      }
-      
-      // 在当前位置到航点之间找一个规划视野内的点
-      double actual_progress_t = 0.0;
-      double min_dist_to_traj = 9999;
-      for (double t_search = 0.0; t_search <= waypoint_t; t_search += t_step)
-      {
-        Eigen::Vector3d pos_t = planner_manager_->global_data_.getPosition(t_search);
-        double dist_to_traj = (pos_t - reference_pos).norm();
-        if (dist_to_traj < min_dist_to_traj)
-        {
-          min_dist_to_traj = dist_to_traj;
-          actual_progress_t = t_search;
-        }
-      }
-      
-      // 从当前进度搜索局部目标，但不超过航点时间
-      for (t = actual_progress_t; t <= waypoint_t; t += t_step)
-      {
-        Eigen::Vector3d pos_t = planner_manager_->global_data_.getPosition(t);
-        double dist = (pos_t - reference_pos).norm();
-        
-        if (dist < dist_min)
-        {
-          dist_min = dist;
-          dist_min_t = t;
-        }
-        if (dist >= planning_horizen_)
-        {
-          local_target_pt_ = pos_t;
-          planner_manager_->global_data_.last_progress_time_ = dist_min_t;
-          break;
-        }
-      }
-      
-      // 如果没有找到规划视野外的点，使用航点作为目标
-      if (t > waypoint_t)
-      {
-        local_target_pt_ = current_target_waypoint_;
-        local_target_vel_ = Eigen::Vector3d::Zero();
-        return;
-      }
-      
-      // 设置局部目标速度
-      if ((current_target_waypoint_ - local_target_pt_).norm() < 
-          (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / 
-          (2 * planner_manager_->pp_.max_acc_))
-      {
-        local_target_vel_ = Eigen::Vector3d::Zero();
-      }
-      else
-      {
-        local_target_vel_ = planner_manager_->global_data_.getVelocity(t);
-      }
-      return;
-    }
-    
-    /* ========== 原始模式（非强制航点） ========== */
     // 首先，根据实际位置找到全局轨迹上最近的点，确定当前真实进度
     double actual_progress_t = 0.0;
     double min_dist_to_traj = 9999;
@@ -825,216 +588,6 @@ namespace ego_planner
     }
 
     traj_path_pub_.publish(path_msg);
-  }
-  
-  /* ========== 航点强制到达核心实现 ========== */
-  
-  void EGOReplanFSM::waypointCheckCallback(const ros::TimerEvent &e)
-  {
-    if (!use_mandatory_waypoints_ || !have_odom_ || all_waypoints_completed_)
-      return;
-    
-    // 更新接近时间
-    ros::Time now = ros::Time::now();
-    double dt = (now - last_waypoint_check_time_).toSec();
-    last_waypoint_check_time_ = now;
-    
-    if (have_target_ && !all_waypoints_.empty())
-    {
-      waypoint_approach_time_ += dt;
-    }
-    
-    // 发布航点状态信息
-    publishWaypointStatus();
-    
-    // 可视化当前目标航点
-    visualizeCurrentWaypoint();
-    
-    // 检测航点是否到达
-    if (checkWaypointReached())
-    {
-      ROS_INFO("[WaypointTracker] ========================================");
-      ROS_INFO("[WaypointTracker] WAYPOINT %d REACHED! Position: (%.2f, %.2f, %.2f)",
-               current_waypoint_idx_, current_target_waypoint_.x(), 
-               current_target_waypoint_.y(), current_target_waypoint_.z());
-      ROS_INFO("[WaypointTracker] Actual position: (%.2f, %.2f, %.2f)",
-               odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
-      ROS_INFO("[WaypointTracker] ========================================");
-      
-      waypoint_reached_ = true;
-      
-      // 尝试前进到下一个航点
-      if (!advanceToNextWaypoint())
-      {
-        // 所有航点已完成
-        ROS_INFO("[WaypointTracker] ALL WAYPOINTS COMPLETED!");
-        all_waypoints_completed_ = true;
-        have_target_ = false;
-        changeFSMExecState(WAIT_TARGET, "WAYPOINT_COMPLETE");
-      }
-      else
-      {
-        // 触发重规划到新航点
-        ROS_INFO("[WaypointTracker] Advancing to waypoint %d: (%.2f, %.2f, %.2f)",
-                 current_waypoint_idx_, current_target_waypoint_.x(), 
-                 current_target_waypoint_.y(), current_target_waypoint_.z());
-        
-        // 重置计数器
-        waypoint_replan_count_ = 0;
-        waypoint_approach_time_ = 0.0;
-        
-        // 规划到新航点
-        if (planToCurrentWaypoint())
-        {
-          have_target_ = true;
-          have_new_target_ = true;
-          changeFSMExecState(GEN_NEW_TRAJ, "NEW_WAYPOINT");
-        }
-      }
-    }
-  }
-  
-  bool EGOReplanFSM::checkWaypointReached()
-  {
-    if (all_waypoints_.empty() || current_waypoint_idx_ >= (int)all_waypoints_.size())
-      return false;
-    
-    // 使用无人机实际位置判断是否到达航点
-    double dist = (odom_pos_ - current_target_waypoint_).norm();
-    
-    return dist < waypoint_reach_thresh_;
-  }
-  
-  bool EGOReplanFSM::advanceToNextWaypoint()
-  {
-    current_waypoint_idx_++;
-    
-    if (current_waypoint_idx_ >= (int)all_waypoints_.size())
-    {
-      // 没有更多航点
-      return false;
-    }
-    
-    current_target_waypoint_ = all_waypoints_[current_waypoint_idx_];
-    waypoint_reached_ = false;
-    
-    return true;
-  }
-  
-  bool EGOReplanFSM::planToCurrentWaypoint()
-  {
-    if (all_waypoints_.empty() || current_waypoint_idx_ >= (int)all_waypoints_.size())
-      return false;
-    
-    // 构建从当前航点到最终航点的路径
-    std::vector<Eigen::Vector3d> remaining_wps;
-    for (int i = current_waypoint_idx_; i < (int)all_waypoints_.size(); i++)
-    {
-      remaining_wps.push_back(all_waypoints_[i]);
-    }
-    
-    // 更新终点为最终航点
-    end_pt_ = all_waypoints_.back();
-    
-    // 规划全局轨迹
-    bool success = planner_manager_->planGlobalTrajWaypoints(
-        odom_pos_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
-        remaining_wps,
-        Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
-    
-    if (success)
-    {
-      // 可视化剩余航点
-      for (size_t i = 0; i < remaining_wps.size(); i++)
-      {
-        Eigen::Vector4d color = (i == 0) ? Eigen::Vector4d(1, 0, 0, 1) : Eigen::Vector4d(0, 0.5, 0.5, 1);
-        visualization_->displayGoalPoint(remaining_wps[i], color, 0.3, current_waypoint_idx_ + i);
-        ros::Duration(0.001).sleep();
-      }
-      
-      // 可视化全局轨迹
-      constexpr double step_size_t = 0.1;
-      int i_end = floor(planner_manager_->global_data_.global_duration_ / step_size_t);
-      std::vector<Eigen::Vector3d> global_traj(i_end);
-      for (int i = 0; i < i_end; i++)
-      {
-        global_traj[i] = planner_manager_->global_data_.global_traj_.evaluate(i * step_size_t);
-      }
-      visualization_->displayGlobalPathList(global_traj, 0.1, 0);
-      
-      ROS_INFO("[WaypointTracker] Successfully planned trajectory to waypoint %d", current_waypoint_idx_);
-    }
-    else
-    {
-      ROS_WARN("[WaypointTracker] Failed to plan trajectory to waypoint %d", current_waypoint_idx_);
-    }
-    
-    return success;
-  }
-  
-  Eigen::Vector3d EGOReplanFSM::getCurrentTargetWaypoint()
-  {
-    if (all_waypoints_.empty() || current_waypoint_idx_ >= (int)all_waypoints_.size())
-      return end_pt_;
-    
-    return current_target_waypoint_;
-  }
-  
-  bool EGOReplanFSM::isAllWaypointsCompleted()
-  {
-    return all_waypoints_completed_;
-  }
-  
-  void EGOReplanFSM::publishWaypointStatus()
-  {
-    // 发布当前航点索引
-    std_msgs::Int32 idx_msg;
-    idx_msg.data = current_waypoint_idx_;
-    current_waypoint_pub_.publish(idx_msg);
-    
-    // 发布到当前航点的距离
-    if (!all_waypoints_.empty() && current_waypoint_idx_ < (int)all_waypoints_.size())
-    {
-      std_msgs::Float32 dist_msg;
-      dist_msg.data = (odom_pos_ - current_target_waypoint_).norm();
-      waypoint_distance_pub_.publish(dist_msg);
-    }
-    
-    // 发布航点完成状态
-    std_msgs::Int32 status_msg;
-    if (all_waypoints_completed_)
-      status_msg.data = -1;  // 全部完成
-    else
-      status_msg.data = current_waypoint_idx_;  // 当前正在前往的航点
-    waypoint_status_pub_.publish(status_msg);
-  }
-  
-  void EGOReplanFSM::visualizeCurrentWaypoint()
-  {
-    if (all_waypoints_.empty() || current_waypoint_idx_ >= (int)all_waypoints_.size())
-      return;
-    
-    // 用红色高亮显示当前目标航点
-    visualization_->displayGoalPoint(current_target_waypoint_, Eigen::Vector4d(1, 0, 0, 1), 0.5, 100);
-  }
-  
-  bool EGOReplanFSM::planDirectToWaypoint()
-  {
-    if (all_waypoints_.empty() || current_waypoint_idx_ >= (int)all_waypoints_.size())
-      return false;
-    
-    // 直接规划到当前航点，不考虑后续航点
-    std::vector<Eigen::Vector3d> single_wp;
-    single_wp.push_back(current_target_waypoint_);
-    
-    end_pt_ = current_target_waypoint_;
-    
-    bool success = planner_manager_->planGlobalTrajWaypoints(
-        odom_pos_, odom_vel_, Eigen::Vector3d::Zero(),
-        single_wp,
-        Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
-    
-    return success;
   }
 
 } // namespace ego_planner
