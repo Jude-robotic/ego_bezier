@@ -30,7 +30,6 @@
 #include <ego_planner/DataDisp.h>
 #include <plan_manage/planner_manager.h>
 #include <traj_utils/planning_visualization.h>
-#include <plan_manage/local_coordinate_system.h>
 
 using std::vector;
 
@@ -63,7 +62,6 @@ namespace ego_planner
     EGOPlannerManager::Ptr planner_manager_;
     PlanningVisualization::Ptr visualization_;
     ego_planner::DataDisp data_disp_;
-    LocalCoordinateSystem::Ptr local_frame_;  // 局部坐标系统
 
     /* Parameters */
     int target_type_;

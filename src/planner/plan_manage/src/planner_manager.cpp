@@ -46,11 +46,12 @@ namespace ego_planner
     std::cout << endl << "[Bezier replan]: -------------------------------------" << count++ << std::endl;
     cout.precision(3);
     
-    // CRITICAL: Clamp heights to prevent flying over walls
+    // Get height limits from grid_map boundaries - use actual map limits
+    // For inclined corridor scenarios, we need the full Z range
     Eigen::Vector3d map_max = grid_map_->getMapMaxBoundary();
     Eigen::Vector3d map_min = grid_map_->getMapMinBoundary();
-    double max_flight_height = std::min(map_max.z() - 0.5, 2.5);
-    double min_flight_height = std::max(map_min.z() + 0.3, 0.3);
+    double max_flight_height = map_max.z() - 0.5;  // Safety margin from ceiling
+    double min_flight_height = map_min.z() + 0.3;  // Safety margin from ground
     
     start_pt.z() = std::max(min_flight_height, std::min(max_flight_height, start_pt.z()));
     local_target_pt.z() = std::max(min_flight_height, std::min(max_flight_height, local_target_pt.z()));
@@ -407,13 +408,13 @@ namespace ego_planner
   bool EGOPlannerManager::planGlobalTrajWaypoints(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                                   const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
   {
-    // CRITICAL: Get height limits from grid_map to prevent flying over walls
+    // Get height limits from grid_map - use actual map limits for inclined corridors
     Eigen::Vector3d map_max = grid_map_->getMapMaxBoundary();
     Eigen::Vector3d map_min = grid_map_->getMapMinBoundary();
-    double max_flight_height = std::min(map_max.z() - 0.5, 2.5);  // At least 0.5m below ceiling, max 2.5m
-    double min_flight_height = std::max(map_min.z() + 0.3, 0.3);  // At least 0.3m above ground
+    double max_flight_height = map_max.z() - 0.5;  // Safety margin from ceiling
+    double min_flight_height = map_min.z() + 0.3;  // Safety margin from ground
     
-    ROS_INFO("[PlannerManager] Height limits: min=%.2f, max=%.2f", min_flight_height, max_flight_height);
+    ROS_INFO("[PlannerManager] Global traj height limits: min=%.2f, max=%.2f", min_flight_height, max_flight_height);
     
     vector<Eigen::Vector3d> points;
     // Clamp start position height
@@ -489,11 +490,11 @@ namespace ego_planner
   bool EGOPlannerManager::planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                          const Eigen::Vector3d &end_pos, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
   {
-    // CRITICAL: Get height limits from grid_map to prevent flying over walls
+    // Get height limits from grid_map - use actual map limits for inclined corridors
     Eigen::Vector3d map_max = grid_map_->getMapMaxBoundary();
     Eigen::Vector3d map_min = grid_map_->getMapMinBoundary();
-    double max_flight_height = std::min(map_max.z() - 0.5, 2.5);  // At least 0.5m below ceiling, max 2.5m
-    double min_flight_height = std::max(map_min.z() + 0.3, 0.3);  // At least 0.3m above ground
+    double max_flight_height = map_max.z() - 0.5;  // Safety margin from ceiling
+    double min_flight_height = map_min.z() + 0.3;  // Safety margin from ground
     
     // Clamp positions
     Eigen::Vector3d clamped_start = start_pos;

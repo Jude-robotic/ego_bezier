@@ -591,6 +591,197 @@ void GenerateFixedCrossWallMap() {
   _map_ok = true;
 }
 
+
+// Generate inclined corridor map (30 degrees downward slope)
+// 生成30度向下倾斜的走廊地图，用于测试局部坐标系
+void GenerateInclinedCorridorMap() {
+  pcl::PointXYZ pt;
+  
+  // Corridor parameters
+  double corridor_length = 40.0;  // X direction (horizontal projection)
+  double corridor_width = 6.0;    // Y direction
+  double corridor_local_height = 4.0;  // Height of corridor cross-section
+  double wall_thickness = 0.3;
+  
+  // Slope parameters: 30 degrees downward
+  // tan(30°) ≈ 0.577, so for every 1m horizontal, descend 0.577m
+  double slope_angle = 30.0 * M_PI / 180.0;  // 30 degrees in radians
+  double slope_tan = tan(slope_angle);
+  
+  // Starting height (top of corridor) and ending height (bottom)
+  double start_z = 25.0;  // Start at z=25
+  double end_z = start_z - corridor_length * slope_tan;  // ~25 - 23.1 = ~1.9
+  
+  ROS_INFO("Generating inclined corridor: slope=30deg, start_z=%.1f, end_z=%.1f", start_z, end_z);
+  
+  // Generate inclined corridor walls
+  // The corridor floor follows z = start_z - slope_tan * (x + corridor_length/2)
+  
+  double step = 0.2;  // Coarser resolution for performance
+  
+  // ========== Floor (bottom surface of inclined corridor) ==========
+  for (double x = -corridor_length/2; x <= corridor_length/2; x += step) {
+    double floor_z = start_z - slope_tan * (x + corridor_length/2);
+    for (double y = -corridor_width/2; y <= corridor_width/2; y += step) {
+      for (double dz = -wall_thickness; dz <= 0; dz += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = floor_z + dz;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // ========== Ceiling (top surface of inclined corridor) ==========
+  for (double x = -corridor_length/2; x <= corridor_length/2; x += step) {
+    double floor_z = start_z - slope_tan * (x + corridor_length/2);
+    double ceil_z = floor_z + corridor_local_height;
+    for (double y = -corridor_width/2; y <= corridor_width/2; y += step) {
+      for (double dz = 0; dz <= wall_thickness; dz += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = ceil_z + dz;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // ========== Left wall (y = -corridor_width/2) ==========
+  for (double x = -corridor_length/2; x <= corridor_length/2; x += step) {
+    double floor_z = start_z - slope_tan * (x + corridor_length/2);
+    for (double dy = -wall_thickness; dy <= 0; dy += _resolution) {
+      for (double z = floor_z; z <= floor_z + corridor_local_height; z += step) {
+        pt.x = x;
+        pt.y = -corridor_width/2 + dy;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // ========== Right wall (y = corridor_width/2) ==========
+  for (double x = -corridor_length/2; x <= corridor_length/2; x += step) {
+    double floor_z = start_z - slope_tan * (x + corridor_length/2);
+    for (double dy = 0; dy <= wall_thickness; dy += _resolution) {
+      for (double z = floor_z; z <= floor_z + corridor_local_height; z += step) {
+        pt.x = x;
+        pt.y = corridor_width/2 + dy;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // ========== Front wall (entrance at x = -corridor_length/2, top of slope) ==========
+  double front_floor_z = start_z;
+  for (double dx = -wall_thickness; dx <= 0; dx += _resolution) {
+    for (double y = -corridor_width/2; y <= corridor_width/2; y += step) {
+      for (double z = front_floor_z; z <= front_floor_z + corridor_local_height; z += step) {
+        pt.x = -corridor_length/2 + dx;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // ========== Back wall (exit at x = corridor_length/2, bottom of slope) ==========
+  double back_floor_z = end_z;
+  for (double dx = 0; dx <= wall_thickness; dx += _resolution) {
+    for (double y = -corridor_width/2; y <= corridor_width/2; y += step) {
+      for (double z = back_floor_z; z <= back_floor_z + corridor_local_height; z += step) {
+        pt.x = corridor_length/2 + dx;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // ========== Obstacles along the inclined path ==========
+  
+  // Obstacle 1: Cylinder near start (x=-14)
+  double obs1_x = -14.0;
+  double obs1_y = 1.5;
+  double obs1_floor_z = start_z - slope_tan * (obs1_x + corridor_length/2);
+  double obs1_radius = 0.8;
+  double obs1_height = 2.5;
+  for (double x = obs1_x - obs1_radius; x <= obs1_x + obs1_radius; x += _resolution) {
+    for (double y = obs1_y - obs1_radius; y <= obs1_y + obs1_radius; y += _resolution) {
+      if (sqrt(pow(x - obs1_x, 2) + pow(y - obs1_y, 2)) <= obs1_radius) {
+        for (double z = obs1_floor_z; z <= obs1_floor_z + obs1_height; z += _resolution) {
+          pt.x = x;
+          pt.y = y;
+          pt.z = z;
+          cloudMap.push_back(pt);
+        }
+      }
+    }
+  }
+  
+  // Obstacle 2: Box at x=-6
+  double obs2_x = -6.0;
+  double obs2_y = -1.5;
+  double obs2_floor_z = start_z - slope_tan * (obs2_x + corridor_length/2);
+  double obs2_size = 1.2;
+  double obs2_height = 2.0;
+  for (double x = obs2_x - obs2_size/2; x <= obs2_x + obs2_size/2; x += _resolution) {
+    for (double y = obs2_y - obs2_size/2; y <= obs2_y + obs2_size/2; y += _resolution) {
+      for (double z = obs2_floor_z; z <= obs2_floor_z + obs2_height; z += _resolution) {
+        pt.x = x;
+        pt.y = y;
+        pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+  
+  // Obstacle 3: Suspended ring/torus at x=2 (middle section)
+  double obs3_x = 2.0;
+  double obs3_y = 0.0;
+  double obs3_floor_z = start_z - slope_tan * (obs3_x + corridor_length/2);
+  double obs3_z_center = obs3_floor_z + 2.0;
+  double obs3_major_radius = 1.5;  // Ring major radius
+  double obs3_minor_radius = 0.3;  // Ring tube radius
+  for (double theta = 0; theta < 2*M_PI; theta += 0.15) {
+    double ring_x = obs3_x + obs3_major_radius * cos(theta);
+    double ring_y = obs3_y + obs3_major_radius * sin(theta);
+    for (double phi = 0; phi < 2*M_PI; phi += 0.3) {
+      pt.x = ring_x + obs3_minor_radius * cos(phi) * cos(theta);
+      pt.y = ring_y + obs3_minor_radius * cos(phi) * sin(theta);
+      pt.z = obs3_z_center + obs3_minor_radius * sin(phi);
+      cloudMap.push_back(pt);
+    }
+  }
+  
+  // Obstacle 4: Cylinder at x=10
+  double obs4_x = 14.0;
+  double obs4_y = 1.0;
+  double obs4_floor_z = start_z - slope_tan * (obs4_x + corridor_length/2);
+  double obs4_radius = 0.6;
+  double obs4_height = 2.8;
+  for (double x = obs4_x - obs4_radius; x <= obs4_x + obs4_radius; x += _resolution) {
+    for (double y = obs4_y - obs4_radius; y <= obs4_y + obs4_radius; y += _resolution) {
+      if (sqrt(pow(x - obs4_x, 2) + pow(y - obs4_y, 2)) <= obs4_radius) {
+        for (double z = obs4_floor_z; z <= obs4_floor_z + obs4_height; z += _resolution) {
+          pt.x = x;
+          pt.y = y;
+          pt.z = z;
+          cloudMap.push_back(pt);
+        }
+      }
+    }
+  }
+  
+  cloudMap.width = cloudMap.points.size();
+  cloudMap.height = 1;
+  cloudMap.is_dense = true;
+  
+  ROS_WARN("Finished generating INCLINED corridor map (40m long, 30deg slope, z: %.1f to %.1f)", start_z, end_z);
+  
+  kdtreeLocalMap.setInputCloud(cloudMap.makeShared());
+  _map_ok = true;
+}
 // Generate fixed cross-wall map with additional obstacles (cylinders and cubes)
 void GenerateFixedObstacleMap() {
   pcl::PointXYZ pt;
@@ -851,6 +1042,8 @@ int main(int argc, char** argv) {
     GenerateFixedObstacleMap();
   } else if (map_type == "corridor") {
     GenerateFixedCrossWallMap();  // Now generates corridor map
+  } else if (map_type == "inclined_corridor") {
+    GenerateInclinedCorridorMap();  // 30-degree inclined corridor
   } else {
     // RandomMapGenerate();
     RandomMapGenerateCylinder();

@@ -36,11 +36,6 @@
 
   <arg name="flight_type"/>
 
-  <!-- 可选的高度限制参数 (Optional height limit parameters) -->
-  <arg name="ground_height" default="0.0"/>
-  <arg name="virtual_ceil_height" default="2.5"/>
-  <arg name="local_frame_map_size_z" default="10.0"/>
-
   <!-- main node -->
   <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen">
     <remap from="/odom_world" to="$(arg odometry_topic)"/>
@@ -87,7 +82,7 @@
     <param name="grid_map/local_update_range_z"  value="4.5" /> 
     <param name="grid_map/obstacles_inflation"     value="0.2" /> 
     <param name="grid_map/local_map_margin" value="30"/>
-    <param name="grid_map/ground_height" value="$(arg ground_height)"/>
+    <param name="grid_map/ground_height"        value="0.0"/>
     <!-- camera parameter -->
     <param name="grid_map/cx" value="$(arg cx)"/>
     <param name="grid_map/cy" value="$(arg cy)"/>
@@ -110,7 +105,7 @@
     <param name="grid_map/min_ray_length" value="0.1"/>
     <param name="grid_map/max_ray_length" value="4.5"/>
 
-    <param name="grid_map/virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
+    <param name="grid_map/virtual_ceil_height"   value="2.5"/>
     <param name="grid_map/visualization_truncate_height"   value="2.4"/>
     <param name="grid_map/show_occ_time"  value="false"/>
     <param name="grid_map/pose_type"     value="2"/>  
@@ -122,7 +117,7 @@
     <param name="local_frame/update_thresh" value="5.0" type="double"/>
     <param name="local_frame/map_size_x" value="40.0" type="double"/>
     <param name="local_frame/map_size_y" value="40.0" type="double"/>
-    <param name="local_frame/map_size_z" value="$(arg local_frame_map_size_z)" type="double"/>
+    <param name="local_frame/map_size_z" value="10.0" type="double"/>
     <param name="local_frame/max_history" value="100" type="int"/>
 
   <!-- planner manager -->

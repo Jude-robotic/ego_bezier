@@ -56,6 +56,8 @@ namespace ego_planner
     visualization_.reset(new PlanningVisualization(nh));
     planner_manager_.reset(new EGOPlannerManager);
     planner_manager_->initPlanModules(nh, visualization_);
+    local_frame_.reset(new LocalCoordinateSystem);
+    local_frame_->init(nh);
 
     /* Callbacks */
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &EGOReplanFSM::execFSMCallback, this);
@@ -233,6 +235,16 @@ namespace ego_planner
     odom_orient_.z() = msg->pose.pose.orientation.z;
 
     have_odom_ = true;
+    
+    // ========== 更新局部坐标系原点 ==========
+    if (local_frame_->isEnabled() && have_odom_)
+    {
+      if (local_frame_->updateOrigin(odom_pos_))
+      {
+        ROS_INFO("[FSM] Local frame origin updated to: [%.2f, %.2f, %.2f]",
+                 odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
+      }
+    }
   }
 
   void EGOReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call)
