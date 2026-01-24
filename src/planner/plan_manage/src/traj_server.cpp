@@ -1,6 +1,8 @@
 /**
  * @file traj_server.cpp
  * @brief Trajectory server for executing Bezier curve trajectories
+ * 
+ * 关键修改：实现轨迹切换时的平滑速度过渡，避免速度突变
  */
 
 #include "bezier_opt/piecewise_bezier.h"
@@ -26,8 +28,17 @@ double traj_duration_;
 ros::Time start_time_;
 int traj_id_;
 
+// 关键新增：用于平滑过渡的变量
+Eigen::Vector3d last_cmd_vel_(0, 0, 0);
+Eigen::Vector3d last_cmd_acc_(0, 0, 0);
+bool traj_completed_ = false;
+ros::Time traj_end_time_;
+const double VELOCITY_SMOOTHING_TIME = 0.5;  // 速度平滑过渡时间(秒)
+
 /**
  * @brief Bezier trajectory callback - receives and stores the trajectory
+ * 
+ * 关键修改：接收新轨迹时保存当前速度用于平滑过渡
  */
 void bezierCallback(ego_planner::BezierConstPtr msg)
 {
@@ -69,7 +80,12 @@ void bezierCallback(ego_planner::BezierConstPtr msg)
   traj_id_ = msg->traj_id;
   traj_duration_ = traj_[0].getTimeSum();
 
+  // 重置轨迹完成标志
+  traj_completed_ = false;
+  
   receive_traj_ = true;
+  
+  ROS_DEBUG("[Traj Server] New trajectory received, id=%d, duration=%.2f", traj_id_, traj_duration_);
 }
 
 /**
@@ -117,6 +133,8 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos,
 
 /**
  * @brief Publish command based on Bezier curve evaluation
+ * 
+ * 关键修改：轨迹结束时使用平滑过渡而非突变到零速度
  */
 void cmdCallback(const ros::TimerEvent &e)
 {
@@ -150,33 +168,71 @@ void cmdCallback(const ros::TimerEvent &e)
     cmd.acceleration.y = acc(1);
     cmd.acceleration.z = acc(2);
 
+    // 保存当前速度和加速度用于平滑过渡
+    last_cmd_vel_ = vel;
+    last_cmd_acc_ = acc;
+
     auto yaw_yawdot = calculate_yaw(t_cur, pos, time_now, time_last);
     cmd.yaw = yaw_yawdot.first;
     cmd.yaw_dot = yaw_yawdot.second;
 
     time_last = time_now;
+    traj_completed_ = false;
 
     pos_cmd_pub.publish(cmd);
   }
   else if (t_cur >= traj_duration_)
   {
+    // 关键修改：使用轨迹末端的速度进行平滑过渡，而非立即归零
+    if (!traj_completed_)
+    {
+      traj_completed_ = true;
+      traj_end_time_ = time_now;
+      // 获取轨迹末端的速度（而非强制为零）
+      last_cmd_vel_ = traj_[1].evaluate(traj_duration_);
+      last_cmd_acc_ = traj_[2].evaluate(traj_duration_);
+    }
+    
+    // 计算从轨迹结束后经过的时间
+    double time_since_end = (time_now - traj_end_time_).toSec();
+    
     cmd.header.stamp = time_now;
     cmd.header.frame_id = "world";
     cmd.trajectory_flag = quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_COMPLETED;
     cmd.trajectory_id = traj_id_;
 
-    Eigen::Vector3d pos = traj_[0].evaluate(traj_duration_);
-    cmd.position.x = pos(0);
-    cmd.position.y = pos(1);
-    cmd.position.z = pos(2);
+    Eigen::Vector3d end_pos = traj_[0].evaluate(traj_duration_);
+    
+    // 平滑速度过渡：使用指数衰减让速度逐渐趋近于零
+    // v(t) = v_end * exp(-t / tau)
+    double decay_factor = exp(-time_since_end / VELOCITY_SMOOTHING_TIME);
+    Eigen::Vector3d smooth_vel = last_cmd_vel_ * decay_factor;
+    Eigen::Vector3d smooth_acc = -last_cmd_vel_ / VELOCITY_SMOOTHING_TIME * decay_factor;
+    
+    // 位置也需要相应更新（积分速度）
+    // p(t) = p_end + v_end * tau * (1 - exp(-t/tau))
+    Eigen::Vector3d pos_offset = last_cmd_vel_ * VELOCITY_SMOOTHING_TIME * (1.0 - decay_factor);
+    Eigen::Vector3d smooth_pos = end_pos + pos_offset;
+    
+    // 当速度足够小时，停止平滑过渡
+    if (smooth_vel.norm() < 0.01)
+    {
+      smooth_vel.setZero();
+      smooth_acc.setZero();
+      smooth_pos = end_pos + last_cmd_vel_ * VELOCITY_SMOOTHING_TIME;  // 最终位置
+    }
 
-    cmd.velocity.x = 0.0;
-    cmd.velocity.y = 0.0;
-    cmd.velocity.z = 0.0;
+    cmd.position.x = smooth_pos(0);
+    cmd.position.y = smooth_pos(1);
+    cmd.position.z = smooth_pos(2);
 
-    cmd.acceleration.x = 0.0;
-    cmd.acceleration.y = 0.0;
-    cmd.acceleration.z = 0.0;
+    cmd.velocity.x = smooth_vel(0);
+    cmd.velocity.y = smooth_vel(1);
+    cmd.velocity.z = smooth_vel(2);
+
+    cmd.acceleration.x = smooth_acc(0);
+    cmd.acceleration.y = smooth_acc(1);
+    cmd.acceleration.z = smooth_acc(2);
 
     pos_cmd_pub.publish(cmd);
   }

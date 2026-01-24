@@ -266,8 +266,7 @@ namespace ego_planner
    * @param start_end_derivative Boundary conditions [start_vel, end_vel, start_acc, end_acc]
    * @param ctrl_pts Output: 3 x (3*(K-1)+1) matrix of control points
    * 
-   * For K waypoints, we generate K-1 cubic Bezier segments with 3*(K-1)+1 control points.
-   * C1 continuity (position and velocity) is ensured at junction points.
+   * 关键修改：使用Catmull-Rom风格的切线计算，确保中间航点的平滑穿越
    * 
    * Bezier velocity property: V(0) = 3*(P1-P0)/T, V(T) = 3*(P3-P2)/T
    * Therefore: P1 = P0 + V*T/3, P2 = P3 - V*T/3
@@ -289,29 +288,48 @@ namespace ego_planner
       ctrl_pts.col(i * 3) = point_set[i];
     }
 
-    // Step 2: Compute tangent vectors at each waypoint
+    // Step 2: Compute tangent vectors at each waypoint using Catmull-Rom style
+    // 关键修改：使用Catmull-Rom样条方法计算切线，确保更平滑的轨迹
     std::vector<Eigen::Vector3d> tangents(K);
+    
+    // 用于调整切线大小的张力参数 (0.5 是Catmull-Rom的标准值)
+    const double tension = 0.5;
 
     for (int i = 0; i < K; ++i) {
       if (i == 0) {
-        // Start point: use given start velocity or estimate
+        // Start point: use given start velocity or Catmull-Rom estimation
         if (start_end_derivative.size() >= 1 && start_end_derivative[0].norm() > 1e-6) {
           tangents[i] = start_end_derivative[0];
         } else {
+          // Catmull-Rom: 使用第一段的方向
           tangents[i] = (point_set[1] - point_set[0]) / ts;
         }
       } else if (i == K - 1) {
-        // End point: use given end velocity or estimate
+        // End point: use given end velocity or Catmull-Rom estimation
         if (start_end_derivative.size() >= 2 && start_end_derivative[1].norm() > 1e-6) {
           tangents[i] = start_end_derivative[1];
         } else {
+          // Catmull-Rom: 使用最后一段的方向
           tangents[i] = (point_set[K-1] - point_set[K-2]) / ts;
         }
       } else {
-        // Interior points: use average of adjacent segments
-        Eigen::Vector3d v_prev = (point_set[i] - point_set[i-1]) / ts;
-        Eigen::Vector3d v_next = (point_set[i+1] - point_set[i]) / ts;
-        tangents[i] = 0.5 * (v_prev + v_next);
+        // 关键修改：中间点使用Catmull-Rom切线公式
+        // T_i = tension * (P_{i+1} - P_{i-1}) / (2 * ts)
+        // 这确保了轨迹在中间点的平滑穿越
+        Eigen::Vector3d chord = point_set[i+1] - point_set[i-1];
+        tangents[i] = tension * chord / ts;  // 注意：这里用ts而不是2*ts，因为ts是每段的时间
+        
+        // 速度限制：确保切线不会导致超速
+        double max_tangent_norm = chord.norm() / ts;  // 最大允许的切线大小
+        if (tangents[i].norm() > max_tangent_norm) {
+          tangents[i] = tangents[i].normalized() * max_tangent_norm;
+        }
+        
+        // 确保切线不会太小（避免在航点处减速过多）
+        double min_tangent_norm = chord.norm() / (3.0 * ts);  // 最小允许的切线大小
+        if (tangents[i].norm() < min_tangent_norm && tangents[i].norm() > 1e-6) {
+          tangents[i] = tangents[i].normalized() * min_tangent_norm;
+        }
       }
     }
 

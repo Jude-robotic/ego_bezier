@@ -136,7 +136,15 @@ namespace ego_planner
                current_target_waypoint_.x(), current_target_waypoint_.y(), current_target_waypoint_.z());
     }
     
-    bool success = planner_manager_->planGlobalTrajWaypoints(odom_pos_, Eigen::Vector3d::Zero(), 
+    // 关键修改：使用当前速度作为起始边界，只有最终目标使用零速度
+    Eigen::Vector3d start_vel = odom_vel_;
+    if (start_vel.norm() < 0.1 && !wps.empty())
+    {
+      Eigen::Vector3d dir = (wps[0] - odom_pos_).normalized();
+      start_vel = dir * planner_manager_->pp_.max_vel_ * 0.3;
+    }
+    
+    bool success = planner_manager_->planGlobalTrajWaypoints(odom_pos_, start_vel, 
                                                               Eigen::Vector3d::Zero(), wps, 
                                                               Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
@@ -631,16 +639,36 @@ namespace ego_planner
       {
         local_target_pt_ = current_target_waypoint_;
         
-        // 如果接近航点，速度应该降低以便精确到达
-        if (dist_to_current_waypoint < planning_horizen_ * 0.5)
+        // 关键修改：不再强制零速度，而是计算合理的穿越速度
+        // 只有当这是最终目标点时才使用零速度
+        bool is_final_waypoint = (current_waypoint_idx_ == (int)all_waypoints_.size() - 1);
+        
+        if (is_final_waypoint && dist_to_current_waypoint < waypoint_reach_thresh_ * 2.0)
         {
+          // 最终航点且非常接近时，使用零速度以确保精确停止
           local_target_vel_ = Eigen::Vector3d::Zero();
         }
         else
         {
-          // 设置一个指向航点的速度方向
-          Eigen::Vector3d dir = (current_target_waypoint_ - odom_pos_).normalized();
-          local_target_vel_ = dir * planner_manager_->pp_.max_vel_ * 0.5;
+          // 中间航点或距离较远时，使用穿越速度
+          // 计算指向下一航点的方向（如果存在）
+          Eigen::Vector3d next_dir;
+          if (current_waypoint_idx_ + 1 < (int)all_waypoints_.size())
+          {
+            // 使用Catmull-Rom风格的切线：当前方向与下一段方向的平均
+            Eigen::Vector3d to_current = (current_target_waypoint_ - odom_pos_).normalized();
+            Eigen::Vector3d to_next = (all_waypoints_[current_waypoint_idx_ + 1] - current_target_waypoint_).normalized();
+            next_dir = (to_current + to_next).normalized();
+          }
+          else
+          {
+            next_dir = (current_target_waypoint_ - odom_pos_).normalized();
+          }
+          
+          // 根据距离调整速度大小，但保持非零
+          double speed_factor = std::min(1.0, dist_to_current_waypoint / planning_horizen_);
+          speed_factor = std::max(0.3, speed_factor);  // 最低保持30%的速度
+          local_target_vel_ = next_dir * planner_manager_->pp_.max_vel_ * speed_factor;
         }
         
         ROS_DEBUG("[WaypointTracker] Local target set to current waypoint %d: (%.2f, %.2f, %.2f), dist: %.2f",
@@ -702,20 +730,35 @@ namespace ego_planner
       if (t > waypoint_t)
       {
         local_target_pt_ = current_target_waypoint_;
-        local_target_vel_ = Eigen::Vector3d::Zero();
+        // 修改：使用全局轨迹在航点处的速度，而非零速度
+        local_target_vel_ = planner_manager_->global_data_.getVelocity(waypoint_t);
+        // 如果全局轨迹速度太小，使用指向下一航点的方向
+        if (local_target_vel_.norm() < 0.1 && current_waypoint_idx_ + 1 < (int)all_waypoints_.size())
+        {
+          Eigen::Vector3d to_next = (all_waypoints_[current_waypoint_idx_ + 1] - current_target_waypoint_).normalized();
+          local_target_vel_ = to_next * planner_manager_->pp_.max_vel_ * 0.5;
+        }
         return;
       }
       
-      // 设置局部目标速度
-      if ((current_target_waypoint_ - local_target_pt_).norm() < 
-          (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / 
-          (2 * planner_manager_->pp_.max_acc_))
+      // 设置局部目标速度 - 修改：只有最终航点才使用零速度
+      bool is_final_waypoint = (current_waypoint_idx_ == (int)all_waypoints_.size() - 1);
+      double stopping_dist = (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / 
+                             (2 * planner_manager_->pp_.max_acc_);
+      
+      if (is_final_waypoint && (current_target_waypoint_ - local_target_pt_).norm() < stopping_dist)
       {
         local_target_vel_ = Eigen::Vector3d::Zero();
       }
       else
       {
         local_target_vel_ = planner_manager_->global_data_.getVelocity(t);
+        // 确保速度不会太小
+        if (local_target_vel_.norm() < planner_manager_->pp_.max_vel_ * 0.2)
+        {
+          Eigen::Vector3d dir = (local_target_pt_ - odom_pos_).normalized();
+          local_target_vel_ = dir * planner_manager_->pp_.max_vel_ * 0.3;
+        }
       }
       return;
     }
@@ -791,13 +834,25 @@ namespace ego_planner
       local_target_pt_ = end_pt_;
     }
 
-    if ((end_pt_ - local_target_pt_).norm() < (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / (2 * planner_manager_->pp_.max_acc_))
+    // 修改：只有非常接近最终目标时才使用零速度
+    double stopping_dist = (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / 
+                           (2 * planner_manager_->pp_.max_acc_);
+    double dist_to_end = (end_pt_ - local_target_pt_).norm();
+    
+    if (dist_to_end < stopping_dist && (end_pt_ - odom_pos_).norm() < stopping_dist * 1.5)
     {
+      // 真正接近终点时使用零速度
       local_target_vel_ = Eigen::Vector3d::Zero();
     }
     else
     {
       local_target_vel_ = planner_manager_->global_data_.getVelocity(t);
+      // 确保速度不会太小导致停顿
+      if (local_target_vel_.norm() < planner_manager_->pp_.max_vel_ * 0.2)
+      {
+        Eigen::Vector3d dir = (local_target_pt_ - odom_pos_).normalized();
+        local_target_vel_ = dir * planner_manager_->pp_.max_vel_ * 0.3;
+      }
     }
   }
 
@@ -948,9 +1003,20 @@ namespace ego_planner
     // 更新终点为最终航点
     end_pt_ = all_waypoints_.back();
     
-    // 规划全局轨迹
+    // 关键修改：使用当前实际速度作为起始边界，而非零速度
+    // 这样可以实现轨迹的平滑衔接
+    Eigen::Vector3d start_vel = odom_vel_;
+    
+    // 如果当前速度太小，使用指向第一个航点的方向
+    if (start_vel.norm() < 0.1 && !remaining_wps.empty())
+    {
+      Eigen::Vector3d dir = (remaining_wps[0] - odom_pos_).normalized();
+      start_vel = dir * planner_manager_->pp_.max_vel_ * 0.3;
+    }
+    
+    // 规划全局轨迹 - 只有最终目标使用零速度
     bool success = planner_manager_->planGlobalTrajWaypoints(
-        odom_pos_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+        odom_pos_, start_vel, Eigen::Vector3d::Zero(),
         remaining_wps,
         Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
     

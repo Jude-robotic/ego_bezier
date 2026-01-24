@@ -470,6 +470,23 @@ namespace ego_planner
       time(i) = (pos.col(i + 1) - pos.col(i)).norm() / (pp_.max_vel_);
     }
 
+    // 关键修改：添加转弯角度感知的时间分配
+    // 在方向变化大的航点处增加时间预算，实现更平滑的转弯
+    for (int i = 1; i < pt_num - 1; ++i)
+    {
+      Eigen::Vector3d dir_prev = (pos.col(i) - pos.col(i - 1)).normalized();
+      Eigen::Vector3d dir_next = (pos.col(i + 1) - pos.col(i)).normalized();
+      double cos_angle = dir_prev.dot(dir_next);
+      
+      // 当角度变化大于45度时（cos < 0.707），增加时间
+      if (cos_angle < 0.707)
+      {
+        double angle_factor = 1.0 + (1.0 - cos_angle) * 0.5;  // 最多增加100%时间
+        time(i - 1) *= angle_factor;
+        if (i < pt_num - 1) time(i) *= angle_factor;
+      }
+    }
+
     time(0) *= 2.0;
     time(time.rows() - 1) *= 2.0;
 
