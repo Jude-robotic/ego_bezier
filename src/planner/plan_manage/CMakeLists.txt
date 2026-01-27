@@ -27,6 +27,8 @@ add_message_files(
   FILES
   Bezier.msg
   DataDisp.msg
+  SwarmBezierTrajectory.msg
+  SwarmState.msg
 )
 
 # Generate added messages and services with any dependencies listed here
@@ -95,3 +97,19 @@ add_executable(swarm_traj_generator_node
 )
 target_link_libraries(swarm_traj_generator_node ${catkin_LIBRARIES})
 add_dependencies(swarm_traj_generator_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm Master Publisher Node (主机轨迹发布)
+add_executable(swarm_master_publisher_node
+  src/swarm_master_publisher_node.cpp
+  src/swarm_master_publisher.cpp
+)
+target_link_libraries(swarm_master_publisher_node ${catkin_LIBRARIES} bezier_opt)
+add_dependencies(swarm_master_publisher_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm Follower FSM Node (从机FSM)
+add_executable(swarm_follower_fsm_node
+  src/swarm_follower_fsm_node.cpp
+  src/swarm_follower_fsm.cpp
+)
+target_link_libraries(swarm_follower_fsm_node ${catkin_LIBRARIES} bezier_opt plan_env)
+add_dependencies(swarm_follower_fsm_node ${${PROJECT_NAME}_EXPORTED_TARGETS})

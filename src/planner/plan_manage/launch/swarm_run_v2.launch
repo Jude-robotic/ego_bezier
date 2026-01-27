@@ -1,0 +1,236 @@
+<launch>
+  <!-- 
+    多无人机集群协同飞行系统 - 升级版
+    
+    架构说明：
+    1. 主机(uav_0): 执行完整的SLAM、建图、路径规划
+       - 生成Bezier轨迹
+       - 通过swarm_master_publisher发布为相对坐标系的引导轨迹
+    
+    2. 从机(uav_1~N): 执行集群跟随与局部避障
+       - 通过swarm_follower_fsm订阅引导轨迹
+       - 使用引导轨迹作为EGO-Bezier优化的初值
+    
+    3. 模拟环境: 基于corridor的长廊环境
+  -->
+
+  <!-- ==================== 全局参数 ==================== -->
+  <arg name="map_size_x" default="40.0"/>
+  <arg name="map_size_y" default="10.0"/>
+  <arg name="map_size_z" default="3.0"/>
+  <arg name="odom_topic" default="/visual_slam/odom"/>
+  
+  <!-- 从机数量 -->
+  <arg name="num_followers" default="4"/>
+  
+  <!-- 集群编队参数 -->
+  <arg name="formation_type" default="circle"/>
+  <arg name="formation_radius" default="3.0"/>
+  <arg name="altitude_offset" default="0.5"/>
+  
+  <!-- 集群参数 -->
+  <arg name="publish_rate" default="10.0"/>
+  <arg name="prediction_horizon" default="2.0"/>
+  <arg name="inter_robot_clearance" default="1.0"/>
+
+  <!-- ==================== 环境仿真器 ==================== -->
+  <include file="$(find ego_planner)/launch/simulator.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    
+    <arg name="map_type" value="corridor"/>
+    <arg name="init_x" value="-18.0"/>
+    <arg name="init_y" value="0.0"/>
+    <arg name="init_z" value="1.0"/>
+    
+    <arg name="c_num" value="0"/>
+    <arg name="p_num" value="0"/>
+    <arg name="min_dist" value="1.0"/>
+
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+  </include>
+
+  <!-- ==================== 主机 (uav_0) ==================== -->
+  <group ns="uav_0">
+    <include file="$(find ego_planner)/launch/advanced_param.xml">
+      <arg name="map_size_x_" value="$(arg map_size_x)"/>
+      <arg name="map_size_y_" value="$(arg map_size_y)"/>
+      <arg name="map_size_z_" value="$(arg map_size_z)"/>
+      <arg name="odometry_topic" value="$(arg odom_topic)"/>
+
+      <arg name="camera_pose_topic" value="/pcl_render_node/camera_pose"/>
+      <arg name="depth_topic" value="/pcl_render_node/depth"/>
+      <arg name="cloud_topic" value="/pcl_render_node/cloud"/>
+
+      <arg name="cx" value="321.04638671875"/>
+      <arg name="cy" value="243.44969177246094"/>
+      <arg name="fx" value="387.229248046875"/>
+      <arg name="fy" value="387.229248046875"/>
+
+      <arg name="max_vel" value="1.5"/>
+      <arg name="max_acc" value="2.0"/>
+      <arg name="planning_horizon" value="7.5"/>
+
+      <arg name="flight_type" value="2"/>
+      <arg name="point_num" value="4"/>
+
+      <arg name="point0_x" value="-10.0"/>
+      <arg name="point0_y" value="3.0"/>
+      <arg name="point0_z" value="1.5"/>
+
+      <arg name="point1_x" value="0.0"/>
+      <arg name="point1_y" value="-4.0"/>
+      <arg name="point1_z" value="1.0"/>
+
+      <arg name="point2_x" value="10.0"/>
+      <arg name="point2_y" value="3.0"/>
+      <arg name="point2_z" value="2.0"/>
+
+      <arg name="point3_x" value="18.0"/>
+      <arg name="point3_y" value="0.0"/>
+      <arg name="point3_z" value="1.0"/>
+    </include>
+
+    <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+      <!-- 关键：订阅全局/planning/bezier，因为ego_planner_node发布到绝对路径 -->
+      <remap from="planning/bezier" to="/planning/bezier"/>
+      <!-- 关键：发布到全局/planning/pos_cmd，让so3_control能接收 -->
+      <remap from="/position_cmd" to="/planning/pos_cmd"/>
+      <remap from="/odom_world" to="$(arg odom_topic)"/>
+      <param name="traj_server/time_forward" value="1.0" type="double"/>
+    </node>
+
+    <node pkg="waypoint_generator" name="waypoint_generator" type="waypoint_generator" output="screen">
+      <remap from="~odom" to="$(arg odom_topic)"/>
+      <remap from="~goal" to="/move_base_simple/goal"/>
+      <remap from="~traj_start_trigger" to="/traj_start_trigger"/>
+      <param name="waypoint_type" value="manual-lonely-waypoint"/>
+    </node>
+  </group>
+
+  <!-- ==================== 集群主机轨迹发布器 ==================== -->
+  <node pkg="ego_planner" name="swarm_master_publisher" type="swarm_master_publisher_node" output="screen">
+    <remap from="/uav_0/odom" to="$(arg odom_topic)"/>
+    
+    <param name="swarm/num_followers" value="$(arg num_followers)"/>
+    <param name="swarm/publish_rate" value="$(arg publish_rate)"/>
+    <param name="swarm/prediction_horizon" value="$(arg prediction_horizon)"/>
+    <param name="swarm/prediction_steps" value="10"/>
+    <param name="swarm/max_vel" value="1.5"/>
+    <param name="swarm/max_acc" value="2.0"/>
+    <param name="swarm/max_jerk" value="4.0"/>
+    <param name="swarm/world_frame" value="world"/>
+    
+    <param name="swarm/formation_type" value="$(arg formation_type)"/>
+    <param name="swarm/formation_radius" value="$(arg formation_radius)"/>
+    <param name="swarm/altitude_offset" value="$(arg altitude_offset)"/>
+  </node>
+
+  <!-- ==================== 从机 (uav_1~4) ==================== -->
+  <!-- 注意: 从机FSM节点现在使用非私有NodeHandle，参数直接在group下设置 -->
+  
+  <group ns="uav_1">
+    <!-- 参数设置 -->
+    <param name="follower/uav_id" value="1"/>
+    <param name="follower/odom_topic" value="$(arg odom_topic)"/>
+    <param name="follower/initial_wait_time" value="15.0"/>
+    <param name="follower/connection_timeout" value="2.0"/>
+    <!-- 优化器参数 - 必须设置，否则会使用未初始化值 -->
+    <param name="optimization/lambda_smooth" value="0.5"/>
+    <param name="optimization/lambda_collision" value="5.0"/>
+    <param name="optimization/lambda_feasibility" value="2.0"/>
+    <param name="optimization/lambda_fitness" value="1.0"/>
+    <param name="optimization/lambda_inter_robot" value="10.0"/>
+    <param name="optimization/dist0" value="0.5"/>
+    <param name="optimization/max_vel" value="1.5"/>
+    <param name="optimization/max_acc" value="2.0"/>
+    
+    <!-- 从机FSM节点 -->
+    <node pkg="ego_planner" name="swarm_follower_fsm" type="swarm_follower_fsm_node" output="screen"/>
+    
+    <!-- 轨迹服务器 -->
+    <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+      <remap from="planning/bezier" to="planning/bezier"/>
+      <remap from="/position_cmd" to="planning/pos_cmd"/>
+      <remap from="/odom_world" to="$(arg odom_topic)"/>
+      <param name="traj_server/time_forward" value="1.0" type="double"/>
+    </node>
+  </group>
+
+  <group ns="uav_2">
+    <param name="follower/uav_id" value="2"/>
+    <param name="follower/odom_topic" value="$(arg odom_topic)"/>
+    <param name="follower/initial_wait_time" value="15.0"/>
+    <param name="follower/connection_timeout" value="2.0"/>
+    <param name="optimization/lambda_smooth" value="0.5"/>
+    <param name="optimization/lambda_collision" value="5.0"/>
+    <param name="optimization/lambda_feasibility" value="2.0"/>
+    <param name="optimization/lambda_fitness" value="1.0"/>
+    <param name="optimization/lambda_inter_robot" value="10.0"/>
+    <param name="optimization/dist0" value="0.5"/>
+    <param name="optimization/max_vel" value="1.5"/>
+    <param name="optimization/max_acc" value="2.0"/>
+    
+    <node pkg="ego_planner" name="swarm_follower_fsm" type="swarm_follower_fsm_node" output="screen"/>
+    
+    <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+      <remap from="planning/bezier" to="planning/bezier"/>
+      <remap from="/position_cmd" to="planning/pos_cmd"/>
+      <remap from="/odom_world" to="$(arg odom_topic)"/>
+      <param name="traj_server/time_forward" value="1.0" type="double"/>
+    </node>
+  </group>
+
+  <group ns="uav_3">
+    <param name="follower/uav_id" value="3"/>
+    <param name="follower/odom_topic" value="$(arg odom_topic)"/>
+    <param name="follower/initial_wait_time" value="15.0"/>
+    <param name="follower/connection_timeout" value="2.0"/>
+    <param name="optimization/lambda_smooth" value="0.5"/>
+    <param name="optimization/lambda_collision" value="5.0"/>
+    <param name="optimization/lambda_feasibility" value="2.0"/>
+    <param name="optimization/lambda_fitness" value="1.0"/>
+    <param name="optimization/lambda_inter_robot" value="10.0"/>
+    <param name="optimization/dist0" value="0.5"/>
+    <param name="optimization/max_vel" value="1.5"/>
+    <param name="optimization/max_acc" value="2.0"/>
+    
+    <node pkg="ego_planner" name="swarm_follower_fsm" type="swarm_follower_fsm_node" output="screen"/>
+    
+    <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+      <remap from="planning/bezier" to="planning/bezier"/>
+      <remap from="/position_cmd" to="planning/pos_cmd"/>
+      <remap from="/odom_world" to="$(arg odom_topic)"/>
+      <param name="traj_server/time_forward" value="1.0" type="double"/>
+    </node>
+  </group>
+
+  <group ns="uav_4">
+    <param name="follower/uav_id" value="4"/>
+    <param name="follower/odom_topic" value="$(arg odom_topic)"/>
+    <param name="follower/initial_wait_time" value="15.0"/>
+    <param name="follower/connection_timeout" value="2.0"/>
+    <param name="optimization/lambda_smooth" value="0.5"/>
+    <param name="optimization/lambda_collision" value="5.0"/>
+    <param name="optimization/lambda_feasibility" value="2.0"/>
+    <param name="optimization/lambda_fitness" value="1.0"/>
+    <param name="optimization/lambda_inter_robot" value="10.0"/>
+    <param name="optimization/dist0" value="0.5"/>
+    <param name="optimization/max_vel" value="1.5"/>
+    <param name="optimization/max_acc" value="2.0"/>
+    
+    <node pkg="ego_planner" name="swarm_follower_fsm" type="swarm_follower_fsm_node" output="screen"/>
+    
+    <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+      <remap from="planning/bezier" to="planning/bezier"/>
+      <remap from="/position_cmd" to="planning/pos_cmd"/>
+      <remap from="/odom_world" to="$(arg odom_topic)"/>
+      <param name="traj_server/time_forward" value="1.0" type="double"/>
+    </node>
+  </group>
+
+  <!-- ==================== RViz可视化 ==================== -->
+  <include file="$(find ego_planner)/launch/rviz.launch"/>
+
+</launch>

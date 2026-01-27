@@ -28,11 +28,20 @@ namespace ego_planner
     
     // Initialize collision weight for rebound optimization
     new_lambda2_ = lambda2_;
+    
+    // CRITICAL: Initialize cps_.clearance here to avoid uninitialized value
+    // This must be set before any optimization calls
+    cps_.clearance = (dist0_ > 0) ? dist0_ : 0.5;  // Default to 0.5m if not set
   }
 
   void BezierOptimizer::setEnvironment(const GridMap::Ptr &env)
   {
     this->grid_map_ = env;
+  }
+
+  void BezierOptimizer::setGuidePath(const vector<Eigen::Vector3d> &guide_pt)
+  {
+    guide_pts_ = guide_pt;
   }
 
   void BezierOptimizer::setControlPoints(const Eigen::MatrixXd &points)
