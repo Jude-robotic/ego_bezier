@@ -71,8 +71,6 @@ namespace ego_planner
     bezier_pub_ = nh.advertise<ego_planner::Bezier>("/planning/bezier", 10);
     data_disp_pub_ = nh.advertise<ego_planner::DataDisp>("/planning/data_display", 100);
     
-    // 为多机协同系统发布Path格式的轨迹（使用uav_0命名空间）
-    traj_path_pub_ = nh.advertise<nav_msgs::Path>("/uav_0/planning/trajectory", 10);
     
     /* 航点状态发布器 */
     waypoint_status_pub_ = nh.advertise<std_msgs::Int32>("/planning/waypoint_status", 10);
@@ -578,7 +576,6 @@ namespace ego_planner
       bezier.segment_durations.push_back(info->position_traj_.getInterval());
 
       bezier_pub_.publish(bezier);
-      publishTrajectoryPath();  // 发布Path格式轨迹供多机协同使用
 
       visualization_->displayOptimalList(info->position_traj_.getControlPoint(), 0);
     }
@@ -612,7 +609,6 @@ namespace ego_planner
     bezier.segment_durations.push_back(info->position_traj_.getInterval());
 
     bezier_pub_.publish(bezier);
-    publishTrajectoryPath();  // 发布Path格式轨迹供多机协同使用
 
     return true;
   }
@@ -856,44 +852,6 @@ namespace ego_planner
     }
   }
 
-  void EGOReplanFSM::publishTrajectoryPath()
-  {
-    // 从Bezier轨迹中采样点生成Path消息
-    auto info = &planner_manager_->local_data_;
-    
-    // 检查轨迹是否有效（通过控制点数量判断）
-    Eigen::MatrixXd ctrl_pts = info->position_traj_.getControlPoint();
-    if (ctrl_pts.cols() <= 0)
-    {
-      return;
-    }
-
-    nav_msgs::Path path_msg;
-    path_msg.header.stamp = ros::Time::now();
-    path_msg.header.frame_id = "world";
-
-    // 采样轨迹点（每0.1秒一个点）
-    double dt = 0.1;
-    double total_duration = info->duration_;
-    
-    for (double t = 0.0; t <= total_duration; t += dt)
-    {
-      Eigen::Vector3d pos = info->position_traj_.evaluate(t);
-      
-      geometry_msgs::PoseStamped pose;
-      pose.header.stamp = ros::Time::now() + ros::Duration(t);
-      pose.header.frame_id = "world";
-      pose.pose.position.x = pos(0);
-      pose.pose.position.y = pos(1);
-      pose.pose.position.z = pos(2);
-      pose.pose.orientation.w = 1.0;
-      
-      path_msg.poses.push_back(pose);
-    }
-
-    traj_path_pub_.publish(path_msg);
-  }
-  
   /* ========== 航点强制到达核心实现 ========== */
   
   void EGOReplanFSM::waypointCheckCallback(const ros::TimerEvent &e)
