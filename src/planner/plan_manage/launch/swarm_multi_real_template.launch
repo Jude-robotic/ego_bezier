@@ -1,0 +1,47 @@
+<launch>
+  <arg name="real_odom_uav1" default="/uav1/mocap/odom"/>
+  <arg name="real_odom_uav2" default="/uav2/mocap/odom"/>
+  <arg name="real_cloud_uav1" default="/uav1/lidar/points"/>
+  <arg name="real_cloud_uav2" default="/uav2/lidar/points"/>
+  <arg name="real_depth_uav1" default="/uav1/camera/depth/image_rect_raw"/>
+  <arg name="real_depth_uav2" default="/uav2/camera/depth/image_rect_raw"/>
+  <arg name="real_pose_uav1" default="/uav1/camera/pose"/>
+  <arg name="real_pose_uav2" default="/uav2/camera/pose"/>
+
+  <rosparam file="$(find ego_planner)/launch/swarm_master_params.yaml" command="load"/>
+  <rosparam param="swarm_master/agent_ids">[1, 2]</rosparam>
+  <param name="swarm_master/leader_bezier_topic" value="/planning/bezier"/>
+  <node pkg="ego_planner" type="swarm_master_node" name="swarm_master_node" output="screen"/>
+
+  <include file="$(find ego_planner)/launch/swarm_follower_agent.launch">
+    <arg name="ns" value="uav1"/>
+    <arg name="agent_id" value="1"/>
+    <arg name="init_x" value="0.0"/>
+    <arg name="init_y" value="0.0"/>
+    <arg name="init_z" value="1.0"/>
+    <arg name="guidance_topic" value="/swarm/agent_1/guidance_bezier"/>
+    <arg name="state_topic" value="/swarm/agent_1/state"/>
+    <arg name="use_local_map" value="true"/>
+    <arg name="use_real_data" value="true"/>
+    <arg name="real_odom_topic" value="$(arg real_odom_uav1)"/>
+    <arg name="real_cloud_topic" value="$(arg real_cloud_uav1)"/>
+    <arg name="real_depth_topic" value="$(arg real_depth_uav1)"/>
+    <arg name="real_pose_topic" value="$(arg real_pose_uav1)"/>
+  </include>
+
+  <include file="$(find ego_planner)/launch/swarm_follower_agent.launch">
+    <arg name="ns" value="uav2"/>
+    <arg name="agent_id" value="2"/>
+    <arg name="init_x" value="0.0"/>
+    <arg name="init_y" value="0.0"/>
+    <arg name="init_z" value="1.0"/>
+    <arg name="guidance_topic" value="/swarm/agent_2/guidance_bezier"/>
+    <arg name="state_topic" value="/swarm/agent_2/state"/>
+    <arg name="use_local_map" value="true"/>
+    <arg name="use_real_data" value="true"/>
+    <arg name="real_odom_topic" value="$(arg real_odom_uav2)"/>
+    <arg name="real_cloud_topic" value="$(arg real_cloud_uav2)"/>
+    <arg name="real_depth_topic" value="$(arg real_depth_uav2)"/>
+    <arg name="real_pose_topic" value="$(arg real_pose_uav2)"/>
+  </include>
+</launch>

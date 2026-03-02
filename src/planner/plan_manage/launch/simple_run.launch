@@ -11,6 +11,9 @@
 
   <!-- topic of your odometry such as VIO or LIO -->
   <arg name="odom_topic" value="/visual_slam/odom" />
+  <arg name="require_preflight_ok" default="false"/>
+  <arg name="traj_start_trigger_raw_topic" default="/traj_start_trigger"/>
+  <arg name="traj_start_trigger_gated_topic" default="/swarm/traj_start_trigger_gated"/>
 
   <!-- main algorithm params -->
   <include file="$(find ego_planner)/launch/advanced_param.xml">
@@ -81,16 +84,26 @@
 
   <!-- trajectory server -->
   <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+    <param name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+    <param name="preflight_ok_topic" value="/swarm/preflight/ok"/>
     <remap from="/position_cmd" to="planning/pos_cmd"/>
 
     <remap from="/odom_world" to="$(arg odom_topic)"/>
     <param name="traj_server/time_forward" value="1.0" type="double"/>
   </node>
 
+  <node pkg="ego_planner" type="swarm_takeoff_gate_node" name="swarm_takeoff_gate_node" output="screen">
+    <param name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+    <param name="required_consecutive_ok" value="3"/>
+    <param name="preflight_ok_topic" value="/swarm/preflight/ok"/>
+    <param name="trigger_in_topic" value="$(arg traj_start_trigger_raw_topic)"/>
+    <param name="trigger_out_topic" value="$(arg traj_start_trigger_gated_topic)"/>
+  </node>
+
   <node pkg="waypoint_generator" name="waypoint_generator" type="waypoint_generator" output="screen">
     <remap from="~odom" to="$(arg odom_topic)"/>        
     <remap from="~goal" to="/move_base_simple/goal"/>
-    <remap from="~traj_start_trigger" to="/traj_start_trigger" />
+    <remap from="~traj_start_trigger" to="$(arg traj_start_trigger_gated_topic)" />
     <param name="waypoint_type" value="manual-lonely-waypoint"/>    
   </node>
 

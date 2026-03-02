@@ -124,6 +124,52 @@ Visualization Manager:
           Topic: /odom_visualization/path
           Unreliable: false
           Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz/Path
+          Color: 25; 153; 255
+          Enabled: true
+          Head Diameter: 0.300000012
+          Head Length: 0.200000003
+          Length: 0.300000012
+          Line Style: Lines
+          Line Width: 0.0299999993
+          Name: uav1_path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 255; 85; 255
+          Pose Style: Axes
+          Radius: 0.0299999993
+          Shaft Diameter: 0.100000001
+          Shaft Length: 0.100000001
+          Topic: /uav1/odom_visualization/path
+          Unreliable: false
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz/Path
+          Color: 255; 140; 25
+          Enabled: true
+          Head Diameter: 0.300000012
+          Head Length: 0.200000003
+          Length: 0.300000012
+          Line Style: Lines
+          Line Width: 0.0299999993
+          Name: uav2_path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 255; 85; 255
+          Pose Style: Axes
+          Radius: 0.0299999993
+          Shaft Diameter: 0.100000001
+          Shaft Length: 0.100000001
+          Topic: /uav2/odom_visualization/path
+          Unreliable: false
+          Value: true
       Enabled: true
       Name: Planning
     - Class: rviz/Group
@@ -230,8 +276,53 @@ Visualization Manager:
             mesh: true
           Queue Size: 100
           Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /uav1/odom_visualization/robot
+          Name: uav1_robot
+          Namespaces:
+            mesh: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /uav2/odom_visualization/robot
+          Name: uav2_robot
+          Namespaces:
+            mesh: true
+          Queue Size: 100
+          Value: true
       Enabled: true
       Name: Simulation
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm/guidance_viz/markers
+          Name: guidance_trajectories
+          Namespaces:
+            guidance_ctrl_1: true
+            guidance_ctrl_2: true
+            guidance_desired_1: true
+            guidance_desired_2: true
+            guidance_label_1: true
+            guidance_label_2: true
+            guidance_seg_1: true
+            guidance_seg_2: true
+            guidance_traj_1: true
+            guidance_traj_2: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm/comm/markers
+          Name: comm_links
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+      Enabled: true
+      Name: Swarm
     - Class: rviz/PointCloud2
       Color: 255; 0; 0
       Color Transformer: RGB8

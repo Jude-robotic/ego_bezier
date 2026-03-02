@@ -1,0 +1,26 @@
+swarm_master:
+  plan_rate: 20.0
+  leader_bezier_topic: "/planning/bezier"
+
+  agent_ids: [1, 2, 3, 4]
+  state_topic_template: "/swarm/agent_{id}/state"
+  guidance_topic_template: "/swarm/agent_{id}/guidance_bezier"
+
+  safe_radius: 1.2
+  collision_weight: 80.0
+  collision_alpha: 8.0
+  penalty_step: 0.002
+  penalty_iters: 8
+
+  start_time_offset: 0.0
+  state_timeout: 0.2
+  # Bug-1 修复参数：guidance P0 与从机实际位置偏差的 C1 混合距离阈值 (m)
+  # 偏差 < 此值时，P1 线性插向速度方向（稳态下影响极小）
+  # 偏差 >= 此值时，P1 完全按当前速度设置（转弯重规划边界平滑）
+  guidance_c0_blend_dist: 0.3
+
+  formation:
+    type: "V"
+    spacing: 1.6
+    angle_deg: 35.0
+    z_offset: 0.0

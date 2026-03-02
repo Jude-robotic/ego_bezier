@@ -12,7 +12,9 @@ find_package(PCL 1.7 REQUIRED)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
+  std_srvs
   geometry_msgs
+  visualization_msgs
   quadrotor_msgs
   plan_env
   path_searching
@@ -27,6 +29,7 @@ add_message_files(
   FILES
   Bezier.msg
   DataDisp.msg
+  SwarmAgentState.msg
 )
 
 # Generate added messages and services with any dependencies listed here
@@ -87,4 +90,54 @@ add_executable(metrics_recorder_node
 )
 target_link_libraries(metrics_recorder_node ${catkin_LIBRARIES})
 add_dependencies(metrics_recorder_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm Master Coordinator Node
+add_executable(swarm_master_node
+  src/swarm_master_node.cpp
+  src/swarm_master_coordinator.cpp
+)
+target_link_libraries(swarm_master_node ${catkin_LIBRARIES})
+add_dependencies(swarm_master_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm agent state reporter (simulation/real-data compatible)
+add_executable(swarm_agent_state_reporter_node
+  src/swarm_agent_state_reporter_node.cpp
+)
+target_link_libraries(swarm_agent_state_reporter_node ${catkin_LIBRARIES})
+add_dependencies(swarm_agent_state_reporter_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Follower guidance injection + local refine node
+add_executable(swarm_follower_guidance_optimizer_node
+  src/swarm_follower_guidance_optimizer_node.cpp
+)
+target_link_libraries(swarm_follower_guidance_optimizer_node ${catkin_LIBRARIES} bezier_opt plan_env)
+add_dependencies(swarm_follower_guidance_optimizer_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm preflight self-check node
+add_executable(swarm_preflight_check_node
+  src/swarm_preflight_check_node.cpp
+)
+target_link_libraries(swarm_preflight_check_node ${catkin_LIBRARIES})
+add_dependencies(swarm_preflight_check_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm takeoff/arm gate node
+add_executable(swarm_takeoff_gate_node
+  src/swarm_takeoff_gate_node.cpp
+)
+target_link_libraries(swarm_takeoff_gate_node ${catkin_LIBRARIES})
+add_dependencies(swarm_takeoff_gate_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm communication visualization node (master <-> followers)
+add_executable(swarm_comm_visualizer_node
+  src/swarm_comm_visualizer_node.cpp
+)
+target_link_libraries(swarm_comm_visualizer_node ${catkin_LIBRARIES})
+add_dependencies(swarm_comm_visualizer_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Swarm guidance trajectory visualization node (samples guidance bezier for RViz)
+add_executable(swarm_guidance_traj_visualizer_node
+  src/swarm_guidance_traj_visualizer_node.cpp
+)
+target_link_libraries(swarm_guidance_traj_visualizer_node ${catkin_LIBRARIES})
+add_dependencies(swarm_guidance_traj_visualizer_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 

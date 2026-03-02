@@ -1,0 +1,170 @@
+<launch>
+    <arg name="ns" default="uav1"/>
+    <arg name="agent_id" default="1"/>
+
+    <arg name="init_x" default="-2.0"/>
+    <arg name="init_y" default="-2.0"/>
+    <arg name="init_z" default="1.0"/>
+
+    <arg name="guidance_topic" default="/swarm/agent_1/guidance_bezier"/>
+    <arg name="state_topic" default="/swarm/agent_1/state"/>
+    <arg name="guidance_min_start_time_delay" default="0.005"/>
+
+    <!-- Visualization color only.
+      IMPORTANT: This does NOT change dynamics/control; follower physics stays aligned with leader. -->
+    <arg name="viz_color_r" default="0.0"/>
+    <arg name="viz_color_g" default="0.0"/>
+    <arg name="viz_color_b" default="1.0"/>
+    <arg name="viz_color_a" default="1.0"/>
+
+    <!-- Local map / sensing profile -->
+    <arg name="use_local_map" default="false"/>
+    <arg name="use_real_data" default="false"/>
+
+    <!-- Sim sensing topics -->
+    <arg name="sim_odom_topic" default="odom"/>
+    <arg name="sim_cloud_topic" default="/map_generator/global_cloud"/>
+
+    <!-- Real sensing topics (template) -->
+    <arg name="real_odom_topic" default="/mocap/odom"/>
+    <arg name="real_cloud_topic" default="/lidar/points"/>
+    <arg name="real_depth_topic" default="/camera/depth/image_rect_raw"/>
+    <arg name="real_pose_topic" default="/camera/pose"/>
+    <arg name="require_preflight_ok" default="false"/>
+
+    <group ns="$(arg ns)">
+      <node pkg="so3_quadrotor_simulator" type="quadrotor_simulator_so3" name="quadrotor_simulator_so3" output="screen">
+        <param name="rate/odom" value="200.0"/>
+        <param name="simulator/init_state_x" value="$(arg init_x)"/>
+        <param name="simulator/init_state_y" value="$(arg init_y)"/>
+        <param name="simulator/init_state_z" value="$(arg init_z)"/>
+
+        <remap from="~odom" to="odom"/>
+        <remap from="~cmd" to="so3_cmd"/>
+        <remap from="~force_disturbance" to="force_disturbance"/>
+        <remap from="~moment_disturbance" to="moment_disturbance"/>
+      </node>
+
+      <node pkg="nodelet" type="nodelet" args="standalone so3_control/SO3ControlNodelet" name="so3_control" required="false" respawn="true" respawn_delay="1.0" output="screen">
+        <param name="so3_control/init_state_x" value="$(arg init_x)"/>
+        <param name="so3_control/init_state_y" value="$(arg init_y)"/>
+        <param name="so3_control/init_state_z" value="$(arg init_z)"/>
+
+        <remap from="~odom" to="odom"/>
+        <remap from="~position_cmd" to="planning/pos_cmd"/>
+        <remap from="~motors" to="motors"/>
+        <remap from="~corrections" to="corrections"/>
+        <remap from="~so3_cmd" to="so3_cmd"/>
+
+        <rosparam file="$(find so3_control)/config/gains_hummingbird.yaml"/>
+        <rosparam file="$(find so3_control)/config/corrections_hummingbird.yaml"/>
+        <param name="mass" value="0.98"/>
+        <param name="use_angle_corrections " value="false"/>
+        <param name="use_external_yaw " value="false"/>
+        <param name="gains/rot/z" value="1.0"/>
+        <param name="gains/ang/z" value="0.1"/>
+      </node>
+
+      <group unless="$(arg use_local_map)">
+        <node pkg="ego_planner" type="swarm_follower_guidance_optimizer_node" name="swarm_follower_guidance_optimizer" output="screen">
+          <param name="enable_local_refine" value="false"/>
+          <param name="enable_collision_rebound" value="false"/>
+          <param name="use_local_map" value="false"/>
+          <param name="min_start_time_delay" value="$(arg guidance_min_start_time_delay)"/>
+          <param name="fallback_segment_dt" value="0.1"/>
+
+          <param name="optimization/lambda_smooth" value="0.5"/>
+          <param name="optimization/lambda_collision" value="5.0"/>
+          <param name="optimization/lambda_feasibility" value="2.0"/>
+          <param name="optimization/lambda_fitness" value="1.0"/>
+          <param name="optimization/dist0" value="0.5"/>
+          <param name="optimization/max_vel" value="2.0"/>
+          <param name="optimization/max_acc" value="3.0"/>
+          <param name="optimization/order" value="3"/>
+
+          <remap from="~guidance_in" to="$(arg guidance_topic)"/>
+          <remap from="~planning/bezier" to="planning/bezier"/>
+        </node>
+      </group>
+
+      <group if="$(arg use_local_map)">
+        <group unless="$(arg use_real_data)">
+          <rosparam file="$(find ego_planner)/launch/swarm_follower_local_map_sim.yaml" command="load"/>
+          <node pkg="ego_planner" type="swarm_follower_guidance_optimizer_node" name="swarm_follower_guidance_optimizer" output="screen">
+            <param name="enable_local_refine" value="true"/>
+            <param name="enable_collision_rebound" value="true"/>
+            <param name="use_local_map" value="true"/>
+            <param name="min_start_time_delay" value="$(arg guidance_min_start_time_delay)"/>
+            <param name="fallback_segment_dt" value="0.1"/>
+
+            <param name="optimization/lambda_smooth" value="0.5"/>
+            <param name="optimization/lambda_collision" value="5.0"/>
+            <param name="optimization/lambda_feasibility" value="2.0"/>
+            <param name="optimization/lambda_fitness" value="1.0"/>
+            <param name="optimization/dist0" value="0.5"/>
+            <param name="optimization/max_vel" value="2.0"/>
+            <param name="optimization/max_acc" value="3.0"/>
+            <param name="optimization/order" value="3"/>
+
+            <remap from="~guidance_in" to="$(arg guidance_topic)"/>
+            <remap from="~planning/bezier" to="planning/bezier"/>
+            <remap from="/grid_map/odom" to="$(arg sim_odom_topic)"/>
+            <remap from="/grid_map/cloud" to="$(arg sim_cloud_topic)"/>
+          </node>
+        </group>
+
+        <group if="$(arg use_real_data)">
+          <rosparam file="$(find ego_planner)/launch/swarm_follower_local_map_real.yaml" command="load"/>
+          <node pkg="ego_planner" type="swarm_follower_guidance_optimizer_node" name="swarm_follower_guidance_optimizer" output="screen">
+            <param name="enable_local_refine" value="true"/>
+            <param name="enable_collision_rebound" value="true"/>
+            <param name="use_local_map" value="true"/>
+            <param name="min_start_time_delay" value="$(arg guidance_min_start_time_delay)"/>
+            <param name="fallback_segment_dt" value="0.1"/>
+
+            <param name="optimization/lambda_smooth" value="0.5"/>
+            <param name="optimization/lambda_collision" value="5.0"/>
+            <param name="optimization/lambda_feasibility" value="2.0"/>
+            <param name="optimization/lambda_fitness" value="1.0"/>
+            <param name="optimization/dist0" value="0.5"/>
+            <param name="optimization/max_vel" value="2.0"/>
+            <param name="optimization/max_acc" value="3.0"/>
+            <param name="optimization/order" value="3"/>
+
+            <remap from="~guidance_in" to="$(arg guidance_topic)"/>
+            <remap from="~planning/bezier" to="planning/bezier"/>
+            <remap from="/grid_map/odom" to="$(arg real_odom_topic)"/>
+            <remap from="/grid_map/cloud" to="$(arg real_cloud_topic)"/>
+            <remap from="/grid_map/depth" to="$(arg real_depth_topic)"/>
+            <remap from="/grid_map/pose" to="$(arg real_pose_topic)"/>
+          </node>
+        </group>
+      </group>
+
+      <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+        <param name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+        <param name="preflight_ok_topic" value="/swarm/preflight/ok"/>
+        <remap from="/odom_world" to="odom"/>
+        <remap from="/position_cmd" to="planning/pos_cmd"/>
+      </node>
+
+      <node pkg="ego_planner" type="swarm_agent_state_reporter_node" name="swarm_agent_state_reporter" output="screen">
+        <param name="agent_id" value="$(arg agent_id)"/>
+        <param name="publish_rate" value="30.0"/>
+        <param name="state_timeout" value="0.2"/>
+        <remap from="~odom" to="odom"/>
+        <remap from="~state_out" to="$(arg state_topic)"/>
+      </node>
+
+      <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization" output="screen">
+        <remap from="~odom" to="odom"/>
+        <param name="color/a" value="$(arg viz_color_a)"/>
+        <param name="color/r" value="$(arg viz_color_r)"/>
+        <param name="color/g" value="$(arg viz_color_g)"/>
+        <param name="color/b" value="$(arg viz_color_b)"/>
+        <param name="covariance_scale" value="100.0"/>
+        <param name="robot_scale" value="0.8"/>
+        <param name="tf45" value="true"/>
+      </node>
+    </group>
+  </launch>

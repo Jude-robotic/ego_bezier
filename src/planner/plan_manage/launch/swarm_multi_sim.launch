@@ -1,0 +1,154 @@
+<launch>
+    <!-- Multi-agent sim defaults (Stage-5):
+      formation visualization priority, followers run in pure guidance-follow mode.
+      Active obstacle avoidance interfaces are preserved but disabled by default. -->
+  <arg name="follower_use_local_map" default="false"/>
+  <arg name="follower_use_real_data" default="false"/>
+  <arg name="follower_sim_odom_topic" default="odom"/>
+  <arg name="follower_sim_cloud_topic" default="/map_generator/global_cloud"/>
+
+    <!-- To enable future active obstacle avoidance (minimal launch-side switch):
+      follower_use_local_map:=true
+      + for sim sensing: follower_use_real_data:=false and set sim odom/cloud topics
+      + for real sensing: follower_use_real_data:=true and pass real topics in follower launch include -->
+
+  <!-- Default follower spawn positions are aligned with V-formation spacing=1.6, angle=35deg -->
+  <arg name="uav1_init_x" default="-1.31"/>
+  <arg name="uav1_init_y" default="0.92"/>
+  <arg name="uav1_init_z" default="1.0"/>
+
+  <!-- Follower 1 visualization color (RViz only; does NOT affect physics/control) -->
+  <arg name="uav1_viz_color_r" default="0.1"/>
+  <arg name="uav1_viz_color_g" default="0.6"/>
+  <arg name="uav1_viz_color_b" default="1.0"/>
+  <arg name="uav1_viz_color_a" default="1.0"/>
+
+  <arg name="uav2_init_x" default="-1.31"/>
+  <arg name="uav2_init_y" default="-0.92"/>
+  <arg name="uav2_init_z" default="1.0"/>
+
+  <!-- Follower 2 visualization color (RViz only; does NOT affect physics/control) -->
+  <arg name="uav2_viz_color_r" default="1.0"/>
+  <arg name="uav2_viz_color_g" default="0.45"/>
+  <arg name="uav2_viz_color_b" default="0.1"/>
+  <arg name="uav2_viz_color_a" default="1.0"/>
+
+  <!-- Stage-3: master <-> follower communication visualization -->
+  <arg name="enable_comm_viz" default="true"/>
+  <arg name="comm_viz_marker_topic" default="/swarm/comm/markers"/>
+  <arg name="comm_viz_publish_rate" default="15.0"/>
+  <arg name="comm_viz_state_timeout" default="0.3"/>
+  <arg name="comm_viz_guidance_timeout" default="0.3"/>
+
+  <!-- Stage-5: guidance trajectory visualization (samples Bezier curve for RViz) -->
+  <arg name="enable_guidance_traj_viz" default="true"/>
+  <arg name="guidance_viz_marker_topic" default="/swarm/guidance_viz/markers"/>
+  <arg name="guidance_viz_publish_rate" default="30.0"/>
+  <arg name="guidance_viz_sample_dt" default="0.05"/>
+  <arg name="guidance_viz_traj_line_width" default="0.07"/>
+  <arg name="guidance_viz_ctrl_sphere_size" default="0.13"/>
+  <arg name="guidance_viz_desired_pos_size" default="0.30"/>
+  <!-- In simulation, default to monitor-only mode (no hard blocking). -->
+  <arg name="enable_preflight_check" default="false"/>
+  <arg name="require_preflight_ok" default="false"/>
+
+  <!-- Leader: keep original single-UAV planning stack unchanged -->
+  <include file="$(find ego_planner)/launch/simple_run.launch">
+    <arg name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+  </include>
+
+  <!-- Swarm master -->
+  <rosparam file="$(find ego_planner)/launch/swarm_master_params.yaml" command="load" ns="swarm_master_node"/>
+  <rosparam param="/swarm_master_node/swarm_master/agent_ids">[1, 2]</rosparam>
+  <param name="/swarm_master_node/swarm_master/leader_bezier_topic" value="/planning/bezier"/>
+
+  <node pkg="ego_planner" type="swarm_master_node" name="swarm_master_node" output="screen"/>
+
+  <group if="$(arg enable_comm_viz)">
+    <node pkg="ego_planner" type="swarm_comm_visualizer_node" name="swarm_comm_visualizer" output="screen">
+      <rosparam param="agent_ids">[1, 2]</rosparam>
+      <param name="leader_bezier_topic" value="/planning/bezier"/>
+      <param name="state_topic_template" value="/swarm/agent_{id}/state"/>
+      <param name="guidance_topic_template" value="/swarm/agent_{id}/guidance_bezier"/>
+      <param name="marker_topic" value="$(arg comm_viz_marker_topic)"/>
+      <param name="publish_rate" value="$(arg comm_viz_publish_rate)"/>
+      <param name="state_timeout" value="$(arg comm_viz_state_timeout)"/>
+      <param name="guidance_timeout" value="$(arg comm_viz_guidance_timeout)"/>
+    </node>
+  </group>
+
+  <!-- Guidance trajectory visualizer: publishes sampled Bezier paths to RViz -->
+  <group if="$(arg enable_guidance_traj_viz)">
+    <node pkg="ego_planner" type="swarm_guidance_traj_visualizer_node"
+          name="swarm_guidance_traj_visualizer" output="screen">
+      <param name="publish_rate"     value="$(arg guidance_viz_publish_rate)"/>
+      <param name="sample_dt"        value="$(arg guidance_viz_sample_dt)"/>
+      <param name="traj_line_width"  value="$(arg guidance_viz_traj_line_width)"/>
+      <param name="ctrl_sphere_size" value="$(arg guidance_viz_ctrl_sphere_size)"/>
+      <param name="desired_pos_size" value="$(arg guidance_viz_desired_pos_size)"/>
+      <param name="marker_topic"     value="$(arg guidance_viz_marker_topic)"/>
+    </node>
+  </group>
+
+  <group if="$(arg enable_preflight_check)">
+    <node pkg="ego_planner" type="swarm_preflight_check_node" name="swarm_preflight_check_node" output="screen">
+      <param name="check_rate" value="2.0"/>
+      <param name="state_timeout_sec" value="0.2"/>
+      <param name="max_topic_silence_sec" value="1.2"/>
+      <param name="min_start_time_margin_sec" value="0.01"/>
+      <param name="max_stamp_delay_sec" value="0.2"/>
+      <param name="max_warn_for_ok" value="3"/>
+
+      <rosparam param="state_topics">['/swarm/agent_1/state','/swarm/agent_2/state']</rosparam>
+      <rosparam param="bezier_topics">['/planning/bezier','/swarm/agent_1/guidance_bezier','/swarm/agent_2/guidance_bezier']</rosparam>
+      <rosparam param="expected_topics">[
+        '/planning/bezier',
+        '/swarm/agent_1/state',
+        '/swarm/agent_2/state',
+        '/swarm/agent_1/guidance_bezier',
+        '/swarm/agent_2/guidance_bezier',
+        '/map_generator/global_cloud'
+      ]</rosparam>
+    </node>
+  </group>
+
+  <!-- Follower 1 -->
+  <include file="$(find ego_planner)/launch/swarm_follower_agent.launch">
+    <arg name="ns" value="uav1"/>
+    <arg name="agent_id" value="1"/>
+    <arg name="init_x" value="$(arg uav1_init_x)"/>
+    <arg name="init_y" value="$(arg uav1_init_y)"/>
+    <arg name="init_z" value="$(arg uav1_init_z)"/>
+    <arg name="guidance_topic" value="/swarm/agent_1/guidance_bezier"/>
+    <arg name="state_topic" value="/swarm/agent_1/state"/>
+    <arg name="use_local_map" value="$(arg follower_use_local_map)"/>
+    <arg name="use_real_data" value="$(arg follower_use_real_data)"/>
+    <arg name="sim_odom_topic" value="$(arg follower_sim_odom_topic)"/>
+    <arg name="sim_cloud_topic" value="$(arg follower_sim_cloud_topic)"/>
+    <arg name="viz_color_r" value="$(arg uav1_viz_color_r)"/>
+    <arg name="viz_color_g" value="$(arg uav1_viz_color_g)"/>
+    <arg name="viz_color_b" value="$(arg uav1_viz_color_b)"/>
+    <arg name="viz_color_a" value="$(arg uav1_viz_color_a)"/>
+    <arg name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+  </include>
+
+  <!-- Follower 2 -->
+  <include file="$(find ego_planner)/launch/swarm_follower_agent.launch">
+    <arg name="ns" value="uav2"/>
+    <arg name="agent_id" value="2"/>
+    <arg name="init_x" value="$(arg uav2_init_x)"/>
+    <arg name="init_y" value="$(arg uav2_init_y)"/>
+    <arg name="init_z" value="$(arg uav2_init_z)"/>
+    <arg name="guidance_topic" value="/swarm/agent_2/guidance_bezier"/>
+    <arg name="state_topic" value="/swarm/agent_2/state"/>
+    <arg name="use_local_map" value="$(arg follower_use_local_map)"/>
+    <arg name="use_real_data" value="$(arg follower_use_real_data)"/>
+    <arg name="sim_odom_topic" value="$(arg follower_sim_odom_topic)"/>
+    <arg name="sim_cloud_topic" value="$(arg follower_sim_cloud_topic)"/>
+    <arg name="viz_color_r" value="$(arg uav2_viz_color_r)"/>
+    <arg name="viz_color_g" value="$(arg uav2_viz_color_g)"/>
+    <arg name="viz_color_b" value="$(arg uav2_viz_color_b)"/>
+    <arg name="viz_color_a" value="$(arg uav2_viz_color_a)"/>
+    <arg name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+  </include>
+</launch>

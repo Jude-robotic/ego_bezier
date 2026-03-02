@@ -1,0 +1,36 @@
+<launch>
+  <arg name="use_real_data" default="false"/>
+
+  <!-- start one stack for one-click precheck -->
+  <include unless="$(arg use_real_data)" file="$(find ego_planner)/launch/swarm_multi_sim.launch"/>
+  <include if="$(arg use_real_data)" file="$(find ego_planner)/launch/swarm_multi_real_template.launch"/>
+
+  <node pkg="ego_planner" type="swarm_preflight_check_node" name="swarm_preflight_check_node" output="screen">
+    <param name="check_rate" value="2.0"/>
+    <param name="state_timeout_sec" value="0.2"/>
+    <param name="max_topic_silence_sec" value="0.6"/>
+    <param name="min_start_time_margin_sec" value="0.05"/>
+    <param name="max_stamp_delay_sec" value="0.2"/>
+    <param name="max_warn_for_ok" value="0"/>
+
+    <rosparam param="state_topics">['/swarm/agent_1/state','/swarm/agent_2/state']</rosparam>
+    <rosparam param="bezier_topics">['/planning/bezier','/swarm/agent_1/guidance_bezier','/swarm/agent_2/guidance_bezier']</rosparam>
+
+    <rosparam unless="$(arg use_real_data)" param="expected_topics">[
+      '/planning/bezier',
+      '/swarm/agent_1/state',
+      '/swarm/agent_2/state',
+      '/swarm/agent_1/guidance_bezier',
+      '/swarm/agent_2/guidance_bezier',
+      '/map_generator/global_cloud'
+    ]</rosparam>
+
+    <rosparam if="$(arg use_real_data)" param="expected_topics">[
+      '/planning/bezier',
+      '/swarm/agent_1/state',
+      '/swarm/agent_2/state',
+      '/swarm/agent_1/guidance_bezier',
+      '/swarm/agent_2/guidance_bezier'
+    ]</rosparam>
+  </node>
+</launch>

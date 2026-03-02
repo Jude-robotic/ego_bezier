@@ -1,0 +1,9 @@
+<launch>
+  <arg name="leader_bezier_topic" default="/planning/bezier"/>
+
+  <rosparam file="$(find ego_planner)/launch/swarm_master_params.yaml" command="load"/>
+
+  <node pkg="ego_planner" type="swarm_master_node" name="swarm_master_node" output="screen">
+    <param name="swarm_master/leader_bezier_topic" value="$(arg leader_bezier_topic)"/>
+  </node>
+</launch>
