@@ -3,31 +3,25 @@
 从机跟踪延迟诊断工具
 =====================
 订阅：
-  /visual_slam/odom            — 主机 odom
-  /uav1/odom                   — 从机1 odom
-  /uav2/odom                   — 从机2 odom
-  /planning/bezier             — 主机 Bezier 轨迹（用于直接推算期望位置）
-  /swarm/agent_1/guidance_bezier — 从机1 引导 Bezier（Master 发给 follower 的轨迹）
-  /swarm/agent_2/guidance_bezier — 从机2 引导 Bezier
+    /uav1/odom                     — 从机1 odom
+    /uav2/odom                     — 从机2 odom
+    /swarm/agent_1/guidance_bezier — 从机1 引导 Bezier
+    /swarm/agent_2/guidance_bezier — 从机2 引导 Bezier
 
 逻辑：
-  1. 「期望位置」= 用最新 guidance_bezier 在当前时刻评估的位置
-     （即从机 traj_server 理想情况下正在执行的轨迹点）
-  2. 「实际位置」= 从机 odom
-  3. 跟踪误差 = 实际 - 期望
+    1. 期望位置：由 guidance_bezier 在当前时刻评估得到
+    2. 实际位置：从机 odom 的位置
+    3. 位置误差：实际 - 期望（x/y/z）
+    4. 期望姿态：由轨迹速度方向估计（roll=0，pitch/yaw 来自速度向量）
+    5. 实际姿态：从机 odom 四元数转 roll/pitch/yaw
+    6. 姿态误差：实际 - 期望（角度差规约到 [-pi, pi]）
 
-按 Ctrl+C 结束采集后，自动弹出 x/y vs t 对比图。
-
-用法：
-  cd ~/ego-planner-bezier
-  source devel/setup.bash
-  python3 scripts/follower_tracking_diagnosis.py
-  
-  # 指定采集时长（秒），到时自动绘图：
-  python3 scripts/follower_tracking_diagnosis.py --duration 60
-
-  # 仅保存图片，不弹窗（适合无 GUI 环境）：
-  python3 scripts/follower_tracking_diagnosis.py --save --no-show
+每次运行结束后会在脚本目录下自动生成 tracking_picture 子目录，
+并保存 4 张图：
+    - uav_1_line_时间戳.png
+    - uav_1_angle_时间戳.png
+    - uav_2_line_时间戳.png
+    - uav_2_angle_时间戳.png
 """
 
 import argparse
@@ -35,6 +29,8 @@ import math
 import sys
 import threading
 import time
+import os
+from datetime import datetime
 
 import numpy as np
 
@@ -147,6 +143,49 @@ def eval_piecewise_bezier(msg: BezierMsg, t_query: float):
     return pts[0]
 
 
+def eval_piecewise_bezier_velocity(msg: BezierMsg, t_query: float, dt: float = 0.02):
+    """用中心差分近似轨迹速度。"""
+    if len(msg.segment_durations) == 0:
+        return None
+
+    total_t = float(sum(msg.segment_durations))
+    if total_t <= 1e-9:
+        return np.array([0.0, 0.0, 0.0])
+
+    t0 = max(0.0, min(total_t, t_query - dt))
+    t1 = max(0.0, min(total_t, t_query + dt))
+    if t1 - t0 < 1e-6:
+        return np.array([0.0, 0.0, 0.0])
+
+    p0 = eval_piecewise_bezier(msg, t0)
+    p1 = eval_piecewise_bezier(msg, t1)
+    if p0 is None or p1 is None:
+        return None
+    return (p1 - p0) / (t1 - t0)
+
+
+def quat_to_rpy(qx: float, qy: float, qz: float, qw: float):
+    """四元数转 roll/pitch/yaw（弧度）。"""
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
+
+
+def wrap_to_pi(angle: float):
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
 # ──────────────────────────────────────────────
 #  数据收集器
 # ──────────────────────────────────────────────
@@ -156,11 +195,31 @@ class TrackingLogger:
 
         # 最新 guidance bezier（含 start_time）
         self._guidance: dict = {1: None, 2: None}
+        self._last_des_rpy = {
+            1: np.array([0.0, 0.0, 0.0]),
+            2: np.array([0.0, 0.0, 0.0]),
+        }
 
-        # 时序数据  {agent_id: {'t': [], 'x_des': [], 'y_des': [], 'x_act': [], 'y_act': [], 'ex': [], 'ey': []}}
+        # 时序数据
         self.data = {
-            1: dict(t=[], x_des=[], y_des=[], x_act=[], y_act=[], ex=[], ey=[]),
-            2: dict(t=[], x_des=[], y_des=[], x_act=[], y_act=[], ex=[], ey=[]),
+            1: dict(
+                t=[],
+                x_des=[], y_des=[], z_des=[],
+                x_act=[], y_act=[], z_act=[],
+                ex=[], ey=[], ez=[],
+                roll_des=[], pitch_des=[], yaw_des=[],
+                roll_act=[], pitch_act=[], yaw_act=[],
+                e_roll=[], e_pitch=[], e_yaw=[]
+            ),
+            2: dict(
+                t=[],
+                x_des=[], y_des=[], z_des=[],
+                x_act=[], y_act=[], z_act=[],
+                ex=[], ey=[], ez=[],
+                roll_des=[], pitch_des=[], yaw_des=[],
+                roll_act=[], pitch_act=[], yaw_act=[],
+                e_roll=[], e_pitch=[], e_yaw=[]
+            ),
         }
         self._t0 = None  # 第一条消息的时间基准
 
@@ -189,125 +248,162 @@ class TrackingLogger:
         # 评估期望位置
         t_in_traj = (now - guide.start_time).to_sec()
         des = eval_piecewise_bezier(guide, t_in_traj)
-        if des is None:
+        vel = eval_piecewise_bezier_velocity(guide, t_in_traj)
+        if des is None or vel is None:
             return
 
         x_act = msg.pose.pose.position.x
         y_act = msg.pose.pose.position.y
+        z_act = msg.pose.pose.position.z
+
+        # 期望姿态：由速度方向估计
+        vx, vy, vz = float(vel[0]), float(vel[1]), float(vel[2])
+        speed_xy = math.hypot(vx, vy)
+        speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+
+        with self._lock:
+            des_rpy = self._last_des_rpy[agent_id].copy()
+
+        if speed > 1e-3:
+            if speed_xy > 1e-5:
+                des_rpy[2] = math.atan2(vy, vx)  # yaw
+            des_rpy[1] = math.atan2(-vz, max(speed_xy, 1e-6))  # pitch
+            des_rpy[0] = 0.0  # roll
+            with self._lock:
+                self._last_des_rpy[agent_id] = des_rpy.copy()
+
+        q = msg.pose.pose.orientation
+        roll_act, pitch_act, yaw_act = quat_to_rpy(q.x, q.y, q.z, q.w)
+        e_roll = wrap_to_pi(roll_act - des_rpy[0])
+        e_pitch = wrap_to_pi(pitch_act - des_rpy[1])
+        e_yaw = wrap_to_pi(yaw_act - des_rpy[2])
 
         with self._lock:
             d = self.data[agent_id]
             d["t"].append(t_rel)
             d["x_des"].append(des[0])
             d["y_des"].append(des[1])
+            d["z_des"].append(des[2])
             d["x_act"].append(x_act)
             d["y_act"].append(y_act)
+            d["z_act"].append(z_act)
             d["ex"].append(x_act - des[0])
             d["ey"].append(y_act - des[1])
+            d["ez"].append(z_act - des[2])
+
+            d["roll_des"].append(des_rpy[0])
+            d["pitch_des"].append(des_rpy[1])
+            d["yaw_des"].append(des_rpy[2])
+            d["roll_act"].append(roll_act)
+            d["pitch_act"].append(pitch_act)
+            d["yaw_act"].append(yaw_act)
+            d["e_roll"].append(e_roll)
+            d["e_pitch"].append(e_pitch)
+            d["e_yaw"].append(e_yaw)
 
 
 # ──────────────────────────────────────────────
 #  绘图
 # ──────────────────────────────────────────────
-def plot_results(logger: TrackingLogger, save_path: str = None, show: bool = True):
+def _save_and_optionally_show(fig, save_path: str, show: bool):
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    print(f"[INFO] 图表已保存到: {save_path}")
+    if show:
+        fig.show()
+    else:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def _draw_no_data(axs, title: str):
+    axs[0].set_title(title)
+    for ax in axs:
+        ax.axis("off")
+    axs[0].text(0.5, 0.5, "数据不足，无法绘制", ha="center", va="center", fontsize=12)
+
+
+def plot_position_error(agent_id: int, d: dict, save_path: str, show: bool):
     if not show:
         _mpl.use("Agg")
     import matplotlib.pyplot as plt
-    import matplotlib.gridspec as gridspec
 
-    fig = plt.figure(figsize=(16, 14))
-    fig.suptitle("从机跟踪诊断：期望位置 vs 实际位置", fontsize=15, fontweight="bold")
+    fig, axs = plt.subplots(4, 1, figsize=(13, 10), sharex=True)
+    fig.suptitle(f"UAV{agent_id} 位置跟踪误差 (x/y/z)", fontsize=14, fontweight="bold")
 
-    colors = {
-        "des": "#2196F3",   # 蓝色 = 期望
-        "act": "#F44336",   # 红色 = 实际
-        "err": "#FF9800",   # 橙色 = 误差
-    }
+    if len(d["t"]) < 3:
+        _draw_no_data(axs, f"UAV{agent_id} 位置跟踪误差")
+        _save_and_optionally_show(fig, save_path, show)
+        return
 
-    for row_idx, agent_id in enumerate([1, 2]):
-        d = logger.data[agent_id]
-        if len(d["t"]) < 5:
-            print(f"[WARN] 从机{agent_id} 数据点不足 ({len(d['t'])} 条)，跳过绘图")
-            continue
+    t = np.array(d["t"])
+    ex = np.array(d["ex"])
+    ey = np.array(d["ey"])
+    ez = np.array(d["ez"])
+    e_total = np.sqrt(ex**2 + ey**2 + ez**2)
 
-        t = np.array(d["t"])
-        x_des = np.array(d["x_des"])
-        y_des = np.array(d["y_des"])
-        x_act = np.array(d["x_act"])
-        y_act = np.array(d["y_act"])
-        ex = np.array(d["ex"])
-        ey = np.array(d["ey"])
-        e_total = np.sqrt(ex**2 + ey**2)
+    axs[0].plot(t, ex, color="#F44336", linewidth=1.1)
+    axs[0].axhline(0, color="black", linewidth=0.8)
+    axs[0].set_ylabel("e_x [m]")
+    axs[0].grid(True, alpha=0.35)
 
-        base_row = row_idx * 3  # 每个从机占 3 行（x, y, err）
+    axs[1].plot(t, ey, color="#2196F3", linewidth=1.1)
+    axs[1].axhline(0, color="black", linewidth=0.8)
+    axs[1].set_ylabel("e_y [m]")
+    axs[1].grid(True, alpha=0.35)
 
-        gs = gridspec.GridSpec(6, 2, figure=fig, hspace=0.45, wspace=0.3)
+    axs[2].plot(t, ez, color="#4CAF50", linewidth=1.1)
+    axs[2].axhline(0, color="black", linewidth=0.8)
+    axs[2].set_ylabel("e_z [m]")
+    axs[2].grid(True, alpha=0.35)
 
-        uav_label = f"从机 {agent_id} (UAV{agent_id})"
+    axs[3].plot(t, e_total, color="#FF9800", linewidth=1.3)
+    axs[3].set_ylabel("|e| [m]")
+    axs[3].set_xlabel("时间 t [s]")
+    axs[3].grid(True, alpha=0.35)
 
-        # ── X 方向 ──────────────────────────────────────
-        ax_x = fig.add_subplot(gs[base_row, :])
-        ax_x.plot(t, x_des, color=colors["des"], linewidth=1.2, label="期望 x")
-        ax_x.plot(t, x_act, color=colors["act"], linewidth=1.0, alpha=0.85, linestyle="--", label="实际 x")
-        ax_x.fill_between(t, x_des, x_act, alpha=0.15, color=colors["err"])
-        ax_x.set_ylabel("x [m]")
-        ax_x.set_title(f"{uav_label} — X 方向跟踪", fontsize=11)
-        ax_x.legend(loc="upper right", fontsize=8)
-        ax_x.grid(True, alpha=0.4)
-        _annotate_rmse(ax_x, ex)
-
-        # ── Y 方向 ──────────────────────────────────────
-        ax_y = fig.add_subplot(gs[base_row + 1, :])
-        ax_y.plot(t, y_des, color=colors["des"], linewidth=1.2, label="期望 y")
-        ax_y.plot(t, y_act, color=colors["act"], linewidth=1.0, alpha=0.85, linestyle="--", label="实际 y")
-        ax_y.fill_between(t, y_des, y_act, alpha=0.15, color=colors["err"])
-        ax_y.set_ylabel("y [m]")
-        ax_y.set_title(f"{uav_label} — Y 方向跟踪", fontsize=11)
-        ax_y.legend(loc="upper right", fontsize=8)
-        ax_y.grid(True, alpha=0.4)
-        _annotate_rmse(ax_y, ey)
-
-        # ── 跟踪误差 ─────────────────────────────────────
-        ax_e = fig.add_subplot(gs[base_row + 2, :])
-        ax_e.plot(t, ex, color="#9C27B0", linewidth=1.0, label="误差 x")
-        ax_e.plot(t, ey, color="#4CAF50", linewidth=1.0, label="误差 y")
-        ax_e.plot(t, e_total, color=colors["err"], linewidth=1.5, label="总误差 |e|", alpha=0.9)
-        ax_e.axhline(0, color="black", linewidth=0.7, linestyle="-")
-
-        # 标注误差超过 0.5 m 的区间（可能失控时段）
-        threshold = 0.5
-        large_err = e_total > threshold
-        if large_err.any():
-            ax_e.fill_between(t, 0, e_total, where=large_err,
-                               alpha=0.25, color="red", label=f"|e|>{threshold}m")
-
-        ax_e.set_xlabel("时间 t [s]")
-        ax_e.set_ylabel("误差 [m]")
-        ax_e.set_title(f"{uav_label} — 跟踪误差", fontsize=11)
-        ax_e.legend(loc="upper right", fontsize=8)
-        ax_e.grid(True, alpha=0.4)
-
-        rmse = float(np.sqrt(np.mean(e_total**2)))
-        max_e = float(np.max(e_total))
-        ax_e.text(0.01, 0.92, f"RMSE={rmse:.3f}m  Max={max_e:.3f}m",
-                  transform=ax_e.transAxes, fontsize=9,
-                  color="darkred", verticalalignment="top")
-
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"[INFO] 图表已保存到: {save_path}")
-
-    if show:
-        plt.show()
-    else:
-        plt.close()
+    _save_and_optionally_show(fig, save_path, show)
 
 
-def _annotate_rmse(ax, err_arr: np.ndarray):
-    rmse = float(np.sqrt(np.mean(err_arr**2)))
-    ax.text(0.01, 0.92, f"RMSE={rmse:.3f}m",
-            transform=ax.transAxes, fontsize=9,
-            color="darkred", verticalalignment="top")
+def plot_angle_error(agent_id: int, d: dict, save_path: str, show: bool):
+    if not show:
+        _mpl.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, axs = plt.subplots(4, 1, figsize=(13, 10), sharex=True)
+    fig.suptitle(f"UAV{agent_id} 姿态跟踪误差 (pitch/yaw/roll)", fontsize=14, fontweight="bold")
+
+    if len(d["t"]) < 3:
+        _draw_no_data(axs, f"UAV{agent_id} 姿态跟踪误差")
+        _save_and_optionally_show(fig, save_path, show)
+        return
+
+    t = np.array(d["t"])
+    e_pitch = np.rad2deg(np.array(d["e_pitch"]))
+    e_yaw = np.rad2deg(np.array(d["e_yaw"]))
+    e_roll = np.rad2deg(np.array(d["e_roll"]))
+    e_total = np.sqrt(e_pitch**2 + e_yaw**2 + e_roll**2)
+
+    axs[0].plot(t, e_pitch, color="#2196F3", linewidth=1.1)
+    axs[0].axhline(0, color="black", linewidth=0.8)
+    axs[0].set_ylabel("e_pitch [deg]")
+    axs[0].grid(True, alpha=0.35)
+
+    axs[1].plot(t, e_yaw, color="#9C27B0", linewidth=1.1)
+    axs[1].axhline(0, color="black", linewidth=0.8)
+    axs[1].set_ylabel("e_yaw [deg]")
+    axs[1].grid(True, alpha=0.35)
+
+    axs[2].plot(t, e_roll, color="#F44336", linewidth=1.1)
+    axs[2].axhline(0, color="black", linewidth=0.8)
+    axs[2].set_ylabel("e_roll [deg]")
+    axs[2].grid(True, alpha=0.35)
+
+    axs[3].plot(t, e_total, color="#FF9800", linewidth=1.3)
+    axs[3].set_ylabel("|e| [deg]")
+    axs[3].set_xlabel("时间 t [s]")
+    axs[3].grid(True, alpha=0.35)
+
+    _save_and_optionally_show(fig, save_path, show)
 
 
 # ──────────────────────────────────────────────
@@ -318,7 +414,7 @@ def main():
     parser.add_argument("--duration", type=float, default=0.0,
                         help="采集时长（秒），0=无限，Ctrl+C 停止")
     parser.add_argument("--save", action="store_true",
-                        help="保存图片到 scripts/follower_tracking_result.png（默认已自动保存）")
+                        help="兼容旧参数：当前版本每次都会自动保存图片")
     parser.add_argument("--no-show", dest="show", action="store_false",
                         help="不弹出交互窗口（适合无 GUI 环境）")
     parser.set_defaults(show=True)
@@ -379,7 +475,12 @@ def main():
             continue
         ex = np.array(d["ex"])
         ey = np.array(d["ey"])
-        e = np.sqrt(ex**2 + ey**2)
+        ez = np.array(d["ez"])
+        e_pos = np.sqrt(ex**2 + ey**2 + ez**2)
+        e_pitch = np.array(d["e_pitch"])
+        e_yaw = np.array(d["e_yaw"])
+        e_roll = np.array(d["e_roll"])
+        e_ang = np.sqrt(e_pitch**2 + e_yaw**2 + e_roll**2)
         t_span = d["t"][-1] - d["t"][0]
         print(f"  从机{aid}: {n} 条数据，时长 {t_span:.1f}s")
         print(f"    x误差 RMSE={np.sqrt(np.mean(ex**2)):.3f}m  "
@@ -388,24 +489,34 @@ def main():
         print(f"    y误差 RMSE={np.sqrt(np.mean(ey**2)):.3f}m  "
               f"max={np.max(np.abs(ey)):.3f}m  "
               f"mean={np.mean(ey):.3f}m")
-        print(f"    总误差|e| RMSE={np.sqrt(np.mean(e**2)):.3f}m  "
-              f"max={np.max(e):.3f}m")
+        print(f"    z误差 RMSE={np.sqrt(np.mean(ez**2)):.3f}m  "
+              f"max={np.max(np.abs(ez)):.3f}m  "
+              f"mean={np.mean(ez):.3f}m")
+        print(f"    位置总误差|e| RMSE={np.sqrt(np.mean(e_pos**2)):.3f}m  "
+              f"max={np.max(e_pos):.3f}m")
+
+        print(f"    pitch误差 RMSE={np.rad2deg(np.sqrt(np.mean(e_pitch**2))):.3f}deg  "
+              f"max={np.rad2deg(np.max(np.abs(e_pitch))):.3f}deg")
+        print(f"    yaw误差   RMSE={np.rad2deg(np.sqrt(np.mean(e_yaw**2))):.3f}deg  "
+              f"max={np.rad2deg(np.max(np.abs(e_yaw))):.3f}deg")
+        print(f"    roll误差  RMSE={np.rad2deg(np.sqrt(np.mean(e_roll**2))):.3f}deg  "
+              f"max={np.rad2deg(np.max(np.abs(e_roll))):.3f}deg")
+        print(f"    姿态总误差|e| RMSE={np.rad2deg(np.sqrt(np.mean(e_ang**2))):.3f}deg  "
+              f"max={np.rad2deg(np.max(e_ang)):.3f}deg")
     print("──────────────────────────────\n")
 
-    import os
-    from datetime import datetime
     _script_dir = os.path.dirname(os.path.abspath(__file__))
-    _timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # 始终保存带时间戳的版本
-    save_path = os.path.join(_script_dir, f"follower_tracking_{_timestamp}.png")
-    # --save 额外保存一份固定名称（方便快速查看最新结果）
-    fixed_save_path = os.path.join(_script_dir, "follower_tracking_result.png") if args.save else None
+    save_dir = os.path.join(_script_dir, "tracking_picture")
+    os.makedirs(save_dir, exist_ok=True)
 
-    plot_results(logger, save_path=save_path, show=args.show)
-    if fixed_save_path:
-        import shutil
-        shutil.copy2(save_path, fixed_save_path)
-        print(f"[INFO] 同时保存到固定路径: {fixed_save_path}")
+    _timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for aid in [1, 2]:
+        pos_path = os.path.join(save_dir, f"uav_{aid}_line_{_timestamp}.png")
+        ang_path = os.path.join(save_dir, f"uav_{aid}_angle_{_timestamp}.png")
+        plot_position_error(aid, logger.data[aid], pos_path, args.show)
+        plot_angle_error(aid, logger.data[aid], ang_path, args.show)
+
+    print(f"[INFO] 4张图像已输出到目录: {save_dir}")
 
 
 if __name__ == "__main__":

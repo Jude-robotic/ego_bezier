@@ -45,7 +45,11 @@ private:
   ego_planner::Bezier buildAgentBezierMsg(int agent_id, const Eigen::MatrixXd &ctrl_pts,
                                           const ros::Time &start_time, int64_t traj_id) const;
 
-  Eigen::Vector3d computeForwardDir(const Eigen::MatrixXd &ctrl_pts, int cp_idx) const;
+/** @brief 对整条主机 Bezier 轨迹计算每个控制点处的平滑航向向量。
+   *  1) 用曲线真实切线 B'(t) 替代控制多边形差分
+   *  2) 对切线序列做滑动平均消除段间接缝抖动
+   *  返回 (3 x N) 矩阵，每列为归一化的 XY 平面航向 */
+  Eigen::MatrixXd computeSmoothedHeadings(const Eigen::MatrixXd &ctrl_pts) const;
   std::string formatTopic(const std::string &topic_template, int agent_id) const;
 
 private:
@@ -77,9 +81,9 @@ private:
   double plan_rate_{20.0};
   double safe_radius_{1.2};
   double collision_weight_{80.0};
-  double collision_alpha_{8.0};
-  double penalty_step_{0.002};
-  int penalty_iters_{8};
+  double collision_gain_cap_{200.0};   // Layer-C: 二次惩罚增益上界
+  double penalty_step_{0.005};
+  int penalty_iters_{3};
 
   double start_time_offset_{0.0};
   double state_timeout_{0.2};

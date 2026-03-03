@@ -1,0 +1,288 @@
+<launch>
+  <!-- ======================================================
+       swarm_longhall.launch
+       多无人机集群 + 长直走廊地图
+       - 地图与航点来自 second_testenv.launch（40×10×3 长走廊）
+       - 集群架构、动力学参数来自 swarm_multi_sim.launch
+       ====================================================== -->
+
+  <!-- ── 地图参数 ── -->
+  <arg name="map_size_x" default="40.0"/>
+  <arg name="map_size_y" default="10.0"/>
+  <arg name="map_size_z" default="3.0"/>
+
+  <!-- ── 里程计话题 ── -->
+  <arg name="odom_topic" default="/visual_slam/odom"/>
+
+  <!-- ── 起飞门控 ── -->
+  <arg name="require_preflight_ok"          default="false"/>
+  <arg name="traj_start_trigger_raw_topic"  default="/traj_start_trigger"/>
+  <arg name="traj_start_trigger_gated_topic" default="/swarm/traj_start_trigger_gated"/>
+
+  <!-- ── Follower 传感器模式（仿真默认关闭局部地图）── -->
+  <arg name="follower_use_local_map"   default="false"/>
+  <arg name="follower_use_real_data"   default="false"/>
+  <arg name="follower_sim_odom_topic"  default="odom"/>
+  <arg name="follower_sim_cloud_topic" default="/map_generator/global_cloud"/>
+
+  <!-- ── Follower 1 初始位置（走廊起点 V 形编队，leader 在 -18,0,1）── -->
+  <arg name="uav1_init_x" default="-19.31"/>
+  <arg name="uav1_init_y" default="0.92"/>
+  <arg name="uav1_init_z" default="1.0"/>
+
+  <!-- Follower 1 可视化颜色（蓝色）-->
+  <arg name="uav1_viz_color_r" default="0.1"/>
+  <arg name="uav1_viz_color_g" default="0.6"/>
+  <arg name="uav1_viz_color_b" default="1.0"/>
+  <arg name="uav1_viz_color_a" default="1.0"/>
+
+  <!-- ── Follower 2 初始位置 ── -->
+  <arg name="uav2_init_x" default="-19.31"/>
+  <arg name="uav2_init_y" default="-0.92"/>
+  <arg name="uav2_init_z" default="1.0"/>
+
+  <!-- Follower 2 可视化颜色（橙色）-->
+  <arg name="uav2_viz_color_r" default="1.0"/>
+  <arg name="uav2_viz_color_g" default="0.45"/>
+  <arg name="uav2_viz_color_b" default="0.1"/>
+  <arg name="uav2_viz_color_a" default="1.0"/>
+
+  <!-- ── 通信可视化参数 ── -->
+  <arg name="enable_comm_viz"         default="true"/>
+  <arg name="comm_viz_marker_topic"   default="/swarm/comm/markers"/>
+  <arg name="comm_viz_publish_rate"   default="15.0"/>
+  <arg name="comm_viz_state_timeout"  default="0.3"/>
+  <arg name="comm_viz_guidance_timeout" default="0.3"/>
+
+  <!-- ── 引导轨迹可视化参数（Bezier 曲线采样）── -->
+  <arg name="enable_guidance_traj_viz"      default="true"/>
+  <arg name="guidance_viz_marker_topic"     default="/swarm/guidance_viz/markers"/>
+  <arg name="guidance_viz_publish_rate"     default="30.0"/>
+  <arg name="guidance_viz_sample_dt"        default="0.05"/>
+  <arg name="guidance_viz_traj_line_width"  default="0.07"/>
+  <arg name="guidance_viz_ctrl_sphere_size" default="0.13"/>
+  <arg name="guidance_viz_desired_pos_size" default="0.30"/>
+
+  <!-- ── 飞前检查（仿真默认关闭硬阻断）── -->
+  <arg name="enable_preflight_check" default="false"/>
+
+  <!-- ============================================================
+       Leader：走廊地图规划栈（来自 second_testenv.launch）
+       ============================================================ -->
+
+  <!-- 主算法参数 -->
+  <include file="$(find ego_planner)/launch/advanced_param.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+
+    <!-- 深度相机话题 -->
+    <arg name="camera_pose_topic" value="/pcl_render_node/camera_pose"/>
+    <arg name="depth_topic"       value="/pcl_render_node/depth"/>
+    <arg name="cloud_topic"       value="/pcl_render_node/cloud"/>
+
+    <!-- 深度相机内参 -->
+    <arg name="cx" value="321.04638671875"/>
+    <arg name="cy" value="243.44969177246094"/>
+    <arg name="fx" value="387.229248046875"/>
+    <arg name="fy" value="387.229248046875"/>
+
+    <!-- 动力学上限 -->
+    <arg name="max_vel"          value="1.5"/>
+    <arg name="max_acc"          value="2.0"/>
+    <arg name="planning_horizon" value="7.5"/>
+
+    <!-- 飞行模式：2 = 全局航点自动飞行 -->
+    <arg name="flight_type" value="2"/>
+
+    <!-- 走廊全局航点（与 second_testenv.launch 完全一致）-->
+    <arg name="point_num" value="4"/>
+
+    <!-- 航点 1：走廊左侧偏上 -->
+    <arg name="point0_x" value="-10.0"/>
+    <arg name="point0_y" value="3.0"/>
+    <arg name="point0_z" value="1.5"/>
+
+    <!-- 航点 2：走廊中央偏下 -->
+    <arg name="point1_x" value="0.0"/>
+    <arg name="point1_y" value="-4.0"/>
+    <arg name="point1_z" value="1.0"/>
+
+    <!-- 航点 3：走廊右侧偏上 -->
+    <arg name="point2_x" value="10.0"/>
+    <arg name="point2_y" value="3.0"/>
+    <arg name="point2_z" value="2.0"/>
+
+    <!-- 航点 4：走廊终点 -->
+    <arg name="point3_x" value="18.0"/>
+    <arg name="point3_y" value="0.0"/>
+    <arg name="point3_z" value="1.0"/>
+  </include>
+
+  <!-- 轨迹跟踪服务器 -->
+  <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+    <param name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+    <param name="preflight_ok_topic"   value="/swarm/preflight/ok"/>
+    <remap from="/position_cmd"  to="planning/pos_cmd"/>
+    <remap from="/odom_world"    to="$(arg odom_topic)"/>
+    <param name="traj_server/time_forward" value="1.0" type="double"/>
+  </node>
+
+  <!-- 起飞门控节点（等待预检通过后才放行触发信号）-->
+  <node pkg="ego_planner" type="swarm_takeoff_gate_node"
+        name="swarm_takeoff_gate_node" output="screen">
+    <param name="require_preflight_ok"     value="$(arg require_preflight_ok)"/>
+    <param name="required_consecutive_ok"  value="3"/>
+    <param name="preflight_ok_topic"       value="/swarm/preflight/ok"/>
+    <param name="trigger_in_topic"         value="$(arg traj_start_trigger_raw_topic)"/>
+    <param name="trigger_out_topic"        value="$(arg traj_start_trigger_gated_topic)"/>
+  </node>
+
+  <!-- 航点生成器 -->
+  <node pkg="waypoint_generator" name="waypoint_generator"
+        type="waypoint_generator" output="screen">
+    <remap from="~odom"              to="$(arg odom_topic)"/>
+    <remap from="~goal"              to="/move_base_simple/goal"/>
+    <remap from="~traj_start_trigger" to="$(arg traj_start_trigger_gated_topic)"/>
+    <param name="waypoint_type" value="manual-lonely-waypoint"/>
+  </node>
+
+  <!-- 仿真器：走廊地图，leader 从走廊西端起飞 -->
+  <include file="$(find ego_planner)/launch/simulator.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="map_type"    value="corridor"/>
+    <arg name="init_x"      value="-18.0"/>
+    <arg name="init_y"      value="0.0"/>
+    <arg name="init_z"      value="1.0"/>
+    <!-- 走廊固定地图，无随机障碍物 -->
+    <arg name="c_num"     value="0"/>
+    <arg name="p_num"     value="0"/>
+    <arg name="min_dist"  value="1.0"/>
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+  </include>
+
+  <!-- ============================================================
+       Swarm Master（来自 swarm_multi_sim.launch）
+       ============================================================ -->
+  <rosparam file="$(find ego_planner)/launch/swarm_master_params.yaml"
+            command="load" ns="swarm_master_node"/>
+  <rosparam param="/swarm_master_node/swarm_master/agent_ids">[1, 2]</rosparam>
+  <param name="/swarm_master_node/swarm_master/leader_bezier_topic"
+         value="/planning/bezier"/>
+
+  <node pkg="ego_planner" type="swarm_master_node"
+        name="swarm_master_node" output="screen"/>
+
+  <!-- ============================================================
+       通信状态可视化
+       ============================================================ -->
+  <group if="$(arg enable_comm_viz)">
+    <node pkg="ego_planner" type="swarm_comm_visualizer_node"
+          name="swarm_comm_visualizer" output="screen">
+      <rosparam param="agent_ids">[1, 2]</rosparam>
+      <param name="leader_bezier_topic"     value="/planning/bezier"/>
+      <param name="state_topic_template"    value="/swarm/agent_{id}/state"/>
+      <param name="guidance_topic_template" value="/swarm/agent_{id}/guidance_bezier"/>
+      <param name="marker_topic"            value="$(arg comm_viz_marker_topic)"/>
+      <param name="publish_rate"            value="$(arg comm_viz_publish_rate)"/>
+      <param name="state_timeout"           value="$(arg comm_viz_state_timeout)"/>
+      <param name="guidance_timeout"        value="$(arg comm_viz_guidance_timeout)"/>
+    </node>
+  </group>
+
+  <!-- ============================================================
+       引导轨迹可视化（Bezier 曲线采样后发布到 RViz）
+       ============================================================ -->
+  <group if="$(arg enable_guidance_traj_viz)">
+    <node pkg="ego_planner" type="swarm_guidance_traj_visualizer_node"
+          name="swarm_guidance_traj_visualizer" output="screen">
+      <param name="publish_rate"     value="$(arg guidance_viz_publish_rate)"/>
+      <param name="sample_dt"        value="$(arg guidance_viz_sample_dt)"/>
+      <param name="traj_line_width"  value="$(arg guidance_viz_traj_line_width)"/>
+      <param name="ctrl_sphere_size" value="$(arg guidance_viz_ctrl_sphere_size)"/>
+      <param name="desired_pos_size" value="$(arg guidance_viz_desired_pos_size)"/>
+      <param name="marker_topic"     value="$(arg guidance_viz_marker_topic)"/>
+    </node>
+  </group>
+
+  <!-- ============================================================
+       飞前检查节点（仿真默认关闭）
+       ============================================================ -->
+  <group if="$(arg enable_preflight_check)">
+    <node pkg="ego_planner" type="swarm_preflight_check_node"
+          name="swarm_preflight_check_node" output="screen">
+      <param name="check_rate"               value="2.0"/>
+      <param name="state_timeout_sec"        value="0.2"/>
+      <param name="max_topic_silence_sec"    value="1.2"/>
+      <param name="min_start_time_margin_sec" value="0.01"/>
+      <param name="max_stamp_delay_sec"      value="0.2"/>
+      <param name="max_warn_for_ok"          value="3"/>
+
+      <rosparam param="state_topics">
+        ['/swarm/agent_1/state', '/swarm/agent_2/state']
+      </rosparam>
+      <rosparam param="bezier_topics">
+        ['/planning/bezier', '/swarm/agent_1/guidance_bezier', '/swarm/agent_2/guidance_bezier']
+      </rosparam>
+      <rosparam param="expected_topics">[
+        '/planning/bezier',
+        '/swarm/agent_1/state',
+        '/swarm/agent_2/state',
+        '/swarm/agent_1/guidance_bezier',
+        '/swarm/agent_2/guidance_bezier',
+        '/map_generator/global_cloud'
+      ]</rosparam>
+    </node>
+  </group>
+
+  <!-- ============================================================
+       Follower 1（V 形编队左翼，蓝色）
+       ============================================================ -->
+  <include file="$(find ego_planner)/launch/swarm_follower_agent.launch">
+    <arg name="ns"              value="uav1"/>
+    <arg name="agent_id"        value="1"/>
+    <arg name="init_x"          value="$(arg uav1_init_x)"/>
+    <arg name="init_y"          value="$(arg uav1_init_y)"/>
+    <arg name="init_z"          value="$(arg uav1_init_z)"/>
+    <arg name="guidance_topic"  value="/swarm/agent_1/guidance_bezier"/>
+    <arg name="state_topic"     value="/swarm/agent_1/state"/>
+    <arg name="use_local_map"   value="$(arg follower_use_local_map)"/>
+    <arg name="use_real_data"   value="$(arg follower_use_real_data)"/>
+    <arg name="sim_odom_topic"  value="$(arg follower_sim_odom_topic)"/>
+    <arg name="sim_cloud_topic" value="$(arg follower_sim_cloud_topic)"/>
+    <arg name="viz_color_r"     value="$(arg uav1_viz_color_r)"/>
+    <arg name="viz_color_g"     value="$(arg uav1_viz_color_g)"/>
+    <arg name="viz_color_b"     value="$(arg uav1_viz_color_b)"/>
+    <arg name="viz_color_a"     value="$(arg uav1_viz_color_a)"/>
+    <arg name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+  </include>
+
+  <!-- ============================================================
+       Follower 2（V 形编队右翼，橙色）
+       ============================================================ -->
+  <include file="$(find ego_planner)/launch/swarm_follower_agent.launch">
+    <arg name="ns"              value="uav2"/>
+    <arg name="agent_id"        value="2"/>
+    <arg name="init_x"          value="$(arg uav2_init_x)"/>
+    <arg name="init_y"          value="$(arg uav2_init_y)"/>
+    <arg name="init_z"          value="$(arg uav2_init_z)"/>
+    <arg name="guidance_topic"  value="/swarm/agent_2/guidance_bezier"/>
+    <arg name="state_topic"     value="/swarm/agent_2/state"/>
+    <arg name="use_local_map"   value="$(arg follower_use_local_map)"/>
+    <arg name="use_real_data"   value="$(arg follower_use_real_data)"/>
+    <arg name="sim_odom_topic"  value="$(arg follower_sim_odom_topic)"/>
+    <arg name="sim_cloud_topic" value="$(arg follower_sim_cloud_topic)"/>
+    <arg name="viz_color_r"     value="$(arg uav2_viz_color_r)"/>
+    <arg name="viz_color_g"     value="$(arg uav2_viz_color_g)"/>
+    <arg name="viz_color_b"     value="$(arg uav2_viz_color_b)"/>
+    <arg name="viz_color_a"     value="$(arg uav2_viz_color_a)"/>
+    <arg name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
+  </include>
+
+  <!-- RViz 可视化 -->
+  <include file="$(find ego_planner)/launch/rviz.launch"/>
+
+</launch>

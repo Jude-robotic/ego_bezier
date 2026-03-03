@@ -23,11 +23,10 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh)
   nh_.param("swarm_master/plan_rate", plan_rate_, 20.0);
   nh_.param("swarm_master/safe_radius", safe_radius_, 1.2);
   nh_.param("swarm_master/collision_weight", collision_weight_, 80.0);
-  nh_.param("swarm_master/collision_alpha", collision_alpha_, 8.0);
-  nh_.param("swarm_master/penalty_step", penalty_step_, 0.002);
-  nh_.param("swarm_master/penalty_iters", penalty_iters_, 8);
+    nh_.param("swarm_master/collision_gain_cap", collision_gain_cap_, 200.0);
+    nh_.param("swarm_master/penalty_step", penalty_step_, 0.005);
+    nh_.param("swarm_master/penalty_iters", penalty_iters_, 3);
 
-  nh_.param("swarm_master/start_time_offset", start_time_offset_, 0.08);
   nh_.param("swarm_master/state_timeout", state_timeout_, 0.2);
   nh_.param("swarm_master/guidance_c0_blend_dist", guidance_c0_blend_dist_, 0.3);
 
@@ -115,25 +114,69 @@ Eigen::MatrixXd SwarmMasterCoordinator::leaderBezierToCtrlPts(const ego_planner:
   return ctrl_pts;
 }
 
-Eigen::Vector3d SwarmMasterCoordinator::computeForwardDir(const Eigen::MatrixXd &ctrl_pts, int cp_idx) const
+Eigen::MatrixXd SwarmMasterCoordinator::computeSmoothedHeadings(const Eigen::MatrixXd &ctrl_pts) const
 {
-  const int n = ctrl_pts.cols();
-  if (n < 2)
-    return Eigen::Vector3d(1.0, 0.0, 0.0);
+    const int N = ctrl_pts.cols();           // 总控制点数 = 3*num_seg + 1
+    const int order = latest_leader_bezier_.order > 0 ? latest_leader_bezier_.order : 3;
+    const int num_seg = (N - 1) / order;     // Bezier 段数
+    Eigen::MatrixXd headings(3, N);
+    const Eigen::Vector3d fallback(1.0, 0.0, 0.0);
 
-  Eigen::Vector3d tangent = Eigen::Vector3d::Zero();
-  if (cp_idx <= 0)
-    tangent = ctrl_pts.col(1) - ctrl_pts.col(0);
-  else if (cp_idx >= n - 1)
-    tangent = ctrl_pts.col(n - 1) - ctrl_pts.col(n - 2);
-  else
-    tangent = ctrl_pts.col(cp_idx + 1) - ctrl_pts.col(cp_idx - 1);
+    if (N < 2) {
+      headings.col(0) = fallback;
+      return headings;
+    }
 
-  tangent(2) = 0.0;
-  if (tangent.norm() < 1e-6)
-    return Eigen::Vector3d(1.0, 0.0, 0.0);
+    // --- Step 1: 对每个控制点求其所在 Bezier 段的曲线真实切线 B'(t) ---
+    // 对 3 阶 Bezier: B'(t)=3(1-t)^2(P1-P0)+6(1-t)t(P2-P1)+3t^2(P3-P2)
+    for (int c = 0; c < N; ++c)
+    {
+      int seg = std::min(c / order, num_seg - 1);   // 所属段号
+      double u = static_cast<double>(c - seg * order) / static_cast<double>(order);  // 段内局部参数 [0,1]
+      // 段端点处 u=1 等价于下一段 u=0，保持在当前段
+      u = std::min(u, 1.0);
 
-  return tangent.normalized();
+      const int base = seg * order;  // 段首控制点索引
+      const Eigen::Vector3d &P0 = ctrl_pts.col(base);
+      const Eigen::Vector3d &P1 = ctrl_pts.col(base + 1);
+      const Eigen::Vector3d &P2 = ctrl_pts.col(base + 2);
+      const Eigen::Vector3d &P3 = ctrl_pts.col(base + 3);
+
+      // 3 阶 Bezier 导数
+      Eigen::Vector3d tangent = 3.0 * (1.0 - u) * (1.0 - u) * (P1 - P0)
+                              + 6.0 * (1.0 - u) * u       * (P2 - P1)
+                              + 3.0 * u * u               * (P3 - P2);
+      tangent(2) = 0.0;  // 只取 XY 平面航向
+      headings.col(c) = tangent;
+    }
+
+    // --- Step 2: 滑动平均平滑（窗口=5）消除段间接缝微小抖动 ---
+    const int half_win = 2;  // 窗口半宽
+    Eigen::MatrixXd smoothed(3, N);
+    for (int c = 0; c < N; ++c)
+    {
+      Eigen::Vector3d sum = Eigen::Vector3d::Zero();
+      int cnt = 0;
+      for (int w = c - half_win; w <= c + half_win; ++w)
+      {
+        if (w >= 0 && w < N) {
+          sum += headings.col(w);
+          ++cnt;
+        }
+      }
+      smoothed.col(c) = sum / static_cast<double>(cnt);
+    }
+
+    // --- Step 3: 归一化 ---
+    for (int c = 0; c < N; ++c)
+    {
+      if (smoothed.col(c).norm() < 1e-6)
+        smoothed.col(c) = fallback;
+      else
+        smoothed.col(c).normalize();
+    }
+
+    return smoothed;
 }
 
 void SwarmMasterCoordinator::generateFormationGuidance(
@@ -142,31 +185,34 @@ void SwarmMasterCoordinator::generateFormationGuidance(
 {
   const double angle_rad = formation_angle_deg_ * M_PI / 180.0;
 
-  for (size_t k = 0; k < agent_ids_.size(); ++k)
-  {
-    const int agent_id = agent_ids_[k];
+    // 一次性计算整条曲线上所有控制点的平滑航向 (Layer-A)
+    const Eigen::MatrixXd headings = computeSmoothedHeadings(leader_ctrl_pts);
 
-    const int level = static_cast<int>(k / 2) + 1;
-    const int side = (k % 2 == 0) ? 1 : -1;
-
-    const double back_dist = level * formation_spacing_ * std::cos(angle_rad);
-    const double lateral_dist = side * level * formation_spacing_ * std::sin(angle_rad);
-
-    Eigen::MatrixXd follower_ctrl = leader_ctrl_pts;
-
-    for (int c = 0; c < follower_ctrl.cols(); ++c)
+    for (size_t k = 0; k < agent_ids_.size(); ++k)
     {
-      const Eigen::Vector3d forward = computeForwardDir(leader_ctrl_pts, c);
-      Eigen::Vector3d left(-forward.y(), forward.x(), 0.0);
-      if (left.norm() < 1e-6)
-        left = Eigen::Vector3d(0.0, 1.0, 0.0);
-      else
-        left.normalize();
+      const int agent_id = agent_ids_[k];
 
-      Eigen::Vector3d offset = -forward * back_dist + left * lateral_dist;
-      offset.z() += formation_z_offset_;
-      follower_ctrl.col(c) += offset;
-    }
+      const int level = static_cast<int>(k / 2) + 1;
+      const int side = (k % 2 == 0) ? 1 : -1;
+
+      const double back_dist = level * formation_spacing_ * std::cos(angle_rad);
+      const double lateral_dist = side * level * formation_spacing_ * std::sin(angle_rad);
+
+      Eigen::MatrixXd follower_ctrl = leader_ctrl_pts;
+
+      for (int c = 0; c < follower_ctrl.cols(); ++c)
+      {
+        const Eigen::Vector3d forward = headings.col(c);  // 平滑的真实切线航向
+        Eigen::Vector3d left_dir(-forward.y(), forward.x(), 0.0);
+        if (left_dir.norm() < 1e-6)
+          left_dir = Eigen::Vector3d(0.0, 1.0, 0.0);
+        else
+          left_dir.normalize();
+
+        Eigen::Vector3d offset = -forward * back_dist + left_dir * lateral_dist;
+        offset.z() += formation_z_offset_;
+        follower_ctrl.col(c) += offset;
+      }
 
     agent_ctrl_pts_map[agent_id] = follower_ctrl;
   }
@@ -201,8 +247,9 @@ void SwarmMasterCoordinator::applySwarmCollisionPenalty(
             continue;
 
           const double err = safe_radius_ - d;
-          const double gain = collision_weight_ * std::exp(collision_alpha_ * err) * collision_alpha_;
-          const Eigen::Vector3d grad = gain * (diff / d);
+            // Layer-C: 有界二次惩罚替代指数惩罚，消除优化对抗
+            const double gain = std::min(collision_weight_ * err * err, collision_gain_cap_);
+            const Eigen::Vector3d grad = gain * (diff / d);
 
           agent_ctrl_pts_map[ids[i]].col(c) += penalty_step_ * grad;
           agent_ctrl_pts_map[ids[j]].col(c) -= penalty_step_ * grad;
@@ -309,12 +356,12 @@ void SwarmMasterCoordinator::runOnce()
       const double blend = std::min(1.0, jump / std::max(guidance_c0_blend_dist_, 1e-3));
       ctrl.col(1) = (1.0 - blend) * ideal_p1 + blend * vel_p1;
 
-      if (jump > 0.05)
-        ROS_WARN_THROTTLE(0.5,
-                          "[SwarmMaster] agent=%d C0_jump=%.3f m blend=%.2f corrected.",
-                          agent_id, jump, blend);
+        if (jump > 0.05)
+          ROS_WARN_THROTTLE(0.5,
+                            "[SwarmMaster] agent=%d C0_jump=%.3f m blend=%.2f corrected.",
+                            agent_id, jump, blend);
+      }
     }
-  }
 
   // 直接使用主机轨迹的原始绝对时间戳，保持主从机全局时钟同步。
   // 移除了原先的 start_time_offset(0.08s) 人工延迟：

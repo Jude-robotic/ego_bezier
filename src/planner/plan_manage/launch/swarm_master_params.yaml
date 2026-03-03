@@ -8,9 +8,10 @@ swarm_master:
 
   safe_radius: 1.2
   collision_weight: 80.0
-  collision_alpha: 8.0
-  penalty_step: 0.002
-  penalty_iters: 8
+  # Layer-C: 有界二次惩罚增益上界（替代指数型 collision_alpha）
+  collision_gain_cap: 200.0
+  penalty_step: 0.005
+  penalty_iters: 3
 
   start_time_offset: 0.0
   state_timeout: 0.2
