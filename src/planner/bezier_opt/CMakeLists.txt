@@ -36,6 +36,8 @@ include_directories(
 add_library(bezier_opt 
     src/piecewise_bezier.cpp 
     src/bezier_optimizer.cpp 
+    src/payload_geometry.cpp
+    src/cooperative_payload_optimizer.cpp
     src/gradient_descent_optimizer.cpp
 )
 target_link_libraries(bezier_opt

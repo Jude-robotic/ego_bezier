@@ -1,6 +1,11 @@
 swarm_master:
   plan_rate: 20.0
   leader_bezier_topic: "/planning/bezier"
+  leader_state_topic: "/visual_slam/odom"
+  leader_corrected_topic: "/swarm/leader/corrected_bezier"
+  leader_state_timeout: 0.2
+  use_fixed_obstacle_schedule: false
+  disable_online_classification: false
 
   agent_ids: [1, 2, 3, 4]
   state_topic_template: "/swarm/agent_{id}/state"
@@ -18,10 +23,103 @@ swarm_master:
   # Bug-1 修复参数：guidance P0 与从机实际位置偏差的 C1 混合距离阈值 (m)
   # 偏差 < 此值时，P1 线性插向速度方向（稳态下影响极小）
   # 偏差 >= 此值时，P1 完全按当前速度设置（转弯重规划边界平滑）
-  guidance_c0_blend_dist: 0.3
+  # 扩大至 0.6m 以增大混合生效范围
+  guidance_c0_blend_dist: 0.6
+  # C2 混合权重：消除 P1→P2 方向突变，取值 [0,1]
+  # 0 = 完全保留理想编队 P2，1 = 完全按速度方向延伸
+  guidance_c2_blend_weight: 0.6
 
   formation:
     type: "V"
     spacing: 1.6
     angle_deg: 35.0
     z_offset: 0.0
+
+  # ── 从机轨迹避障优化 (Step 4.5 新增) ──────────────────────────────────
+  follower_collision_check: true       # 是否启用从机碰撞检测（Phase-1凸包+Phase-2 De Casteljau）
+  follower_optimization_enabled: true  # 是否启用从机轨迹 L-BFGS 优化
+  formation_weight: 20.0              # λ5: 编队保持权重（软约束, 远小于λ2~5000, 安全优先）
+  follower_clearance: 0.4             # 从机碰撞检测安全距离(m), 传入 BezierOptimizer.dist0
+  follower_bezier_sample_density: 4   # 每段贝塞尔 De Casteljau 额外采样点数（Phase-2）
+  opt_timeout_ms: 15.0               # 从机优化耗时警告阈值(ms), 超过则打印 ROS_WARN
+  follower_max_vel: 2.0              # 从机最大速度(m/s)，C1 速度钳制阈值，应与 optimization/max_vel 保持一致
+
+# ── 窄通道编队自适应 (Narrow-Passage Adaptive Formation) ────────────────────
+# 当主机经过的通道宽度 < narrow_passage_threshold 时，
+# 从机编队从水平 V 形自动过渡为垂直 V 形（上下排列）。
+# 要求：SwarmMaster 已配置 GridMap（Prompt 1 完成）；否则自动回退到纴水平编队。
+  narrow_passage_threshold: 3.0  # 通道宽度阈值(m)，建议 = 编队横幅 + 安全裕量
+                                 # (1.6*sin35°)*2 + 1.0 ≈ 2.84→ 取 3.0m
+  transition_ctrl_pts: 6         # 编队变换过渡区控制点数（入口+出口各延伸 6 个点）
+  z_formation_max: 2.5           # Z轴偏移上限(m)，防撞天花板
+  z_formation_min: 0.5           # Z轴偏移下限(m)，防撞地面
+
+# ── Trailing Protection（拖尾保护）──────────────────────────────────────────
+# 解决时序问题：主机通过障碍物后立即取消Z轴编队，但从机尚未通过时触发碰撞。
+# 核心设计：记忆窄通道的世界坐标，只有当所有从机都通过了出口+安全余量后
+# 才允许解除Z轴编队保护。该保护不依赖"当前轨迹是否经过窄通道"，
+# 而是依赖"从机实际位置是否已安全通过窄通道"。
+  trailing_safety_margin: 3.0  # 从机必须超过窄通道出口此距离(m)才解除Z轴编队
+                               # back_dist(1.31m) + 物理安全裕量(1.0m) + 额外裕量(0.7m)
+  narrow_passage_max_age: 10.0 # 窄通道记录最大保持时间(s)，防止从机卡住时永久残留
+                               # 10s 足够从机以 1.5m/s 飞过 15m
+
+  # ── 圆环检测参数 ──────────────────────────────────────────────────────────
+  ring_detect_radius: 2.0      # 前方探测距离(m)，同时也是四向射线命中判定距离上限
+  ring_detect_angles: 12       # 周向射线数量（每30°一条），用于判断是否被障碍物包围
+  ring_center_clear_dist: 1.0  # 中心通畅判定距离(m)，中心点到最近障碍物须>此值
+  ring_surround_ratio: 0.6     # 周围被占比阈值（提高到60%抑制空走廊误判）
+  ring_scan_steps: 6           # 多距离前向扫描步数：在[0.5x, 2.0x]ring_detect_radius范围内
+                               # 均匀采样6个候选中心，解决单点固定距离漏检问题
+  # ── Z_SLIT 钝角三角形编队 ─────────────────────────────────────────────
+  slit_spread_factor: 2.5        # 窄缝时 XY 横纵向扩展倍数（1.0=不变, 2.5=展开
+                                 # 为默认的 2.5 倍，形成钝角三角形）
+  # ── RING 紧凑纵列编队 ─────────────────────────────────────────────────
+  ring_longitudinal_spacing: 1.0 # 圆环时纵列间距(m)，须 < ring 内径-无人机直径
+  ring_compact_lateral_scale: 0.35 # 圆环时横向保留比例(0~1), 0会重合, 建议0.3~0.5
+
+# ── 障碍物识别去抖动（时间窗口确认）────────────────────────────────────────────
+# 解决短暂误识别导致从机频繁变换队形的问题。
+# 核心机制：只有连续 obs_confirm_frames 帧都识别到同一类型才"确认"并下发指令；
+#           确认后保持至少 obs_release_duration 秒再允许解除（抑制闪变）。
+  obs_confirm_frames: 4        # 确认所需连续帧数（20Hz下 = 0.2s延迟，抑制单帧误报）
+  obs_release_duration: 0.5    # 确认后最少保持时长(s)，即使识别消失也保持该时间
+
+  payload:
+    rope_length: 1.0
+    radius: 0.2
+    extra_margin: 0.05
+    triangle_area_min: 0.05
+    inter_uav_sep_min: 0.8
+    samples_per_seg: 3
+
+  cooperative_opt:
+    w_smooth: 10.0
+    w_feas: 1.0
+    w_uav_obs: 100.0
+    w_leader_ref: 50.0
+    w_mode_shape: 30.0
+    w_payload_feas: 120.0
+    w_payload_obs: 160.0
+    w_sep: 40.0
+    payload_invalid_penalty: 2000.0
+    max_iterations: 60
+    finite_diff_eps: 0.001
+    obstacle_search_radius: 1.5
+
+  online_payload_opt_enabled: true
+  online_payload_window_segs: 3
+
+# ── 从机轨迹优化器参数 (Fix 3) ────────────────────────────────────────────────
+# 这些参数由 optimizeFollowerTrajectory() 中的临时 NodeHandle 手动写入后读取。
+# 记录在此作为文档参考；若将来改用命名空间匹配的 NodeHandle，可直接从此处读取。
+# 注意：dist0 必须与 swarm_master/follower_clearance 保持一致。
+optimization:
+  lambda_smooth: 10.0
+  lambda_collision: 5000.0
+  lambda_feasibility: 0.001
+  lambda_fitness: 1.0
+  dist0: 0.4           # 安全距离阈值(m)，与 follower_clearance 一致
+  max_vel: 2.0         # 从机最大速度(m/s)
+  max_acc: 3.0         # 从机最大加速度(m/s^2)
+  order: 3             # Bezier 阶数（三阶）

@@ -1,0 +1,12 @@
+Parameter Scan Robustness Summary
+================================
+top_fraction=0.150
+
+[BSpline]
+  best_config: lambda_smooth=4, lambda_feas=8, lambda_fit=0.4, robust_score=0.926222
+  robust_interval(top configs): lambda_smooth in [0.2, 4], lambda_feas in [0.5, 8], lambda_fit in [0.05, 0.4]
+
+[Bezier]
+  best_config: lambda_smooth=0.5, lambda_feas=1, lambda_fit=0.2, robust_score=0.885972
+  robust_interval(top configs): lambda_smooth in [0.2, 4], lambda_feas in [0.5, 8], lambda_fit in [0.05, 0.4]
+

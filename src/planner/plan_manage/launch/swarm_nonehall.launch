@@ -1,8 +1,8 @@
 <launch>
   <!-- ======================================================
-       swarm_longhall.launch
-       多无人机集群 + 长直走廊地图
-       - 地图与航点来自 second_testenv.launch（40×10×3 长走廊）
+       swarm_nonehall.launch
+       多无人机集群 + 空走廊地图（无障碍物）
+       - 地图：40×10×3 空走廊（仅围墙，无门框/圆环/窄缝障碍物）
        - 集群架构、动力学参数来自 swarm_multi_sim.launch
        ====================================================== -->
 
@@ -26,7 +26,7 @@
   <arg name="follower_sim_odom_topic"  default="odom"/>
   <arg name="follower_sim_cloud_topic" default="/map_generator/global_cloud"/>
   <arg name="startup_hold_enabled" default="true"/>
-  <arg name="startup_guidance_ready_frames" default="6"/>
+  <arg name="startup_guidance_ready_frames" default="2"/>
   <arg name="startup_bridge_duration" default="0.8"/>
   <arg name="startup_hover_timeout" default="0.4"/>
   <arg name="startup_warmup_frames" default="15"/>
@@ -95,7 +95,9 @@
   <arg name="payload_viz_invalid_color_b" default="0.12"/>
   <arg name="payload_rope_length" default="1.0"/>
   <arg name="payload_radius" default="0.2"/>
-  <arg name="payload_extra_margin" default="0.06"/>
+  <arg name="payload_extra_margin" default="0.05"/>
+
+  <arg name="online_payload_window_segs" default="3"/>
 
   <!-- ── 飞前检查（仿真默认关闭硬阻断）── -->
   <arg name="enable_preflight_check" default="false"/>
@@ -129,8 +131,11 @@
 
     <!-- 飞行模式：2 = 全局航点自动飞行 -->
     <arg name="flight_type" value="2"/>
+    <arg name="use_mandatory_waypoints" value="false"/>
+    <arg name="local_frame_enable" value="false"/>
+    <arg name="local_frame_auto_update" value="false"/>
 
-    <!-- 走廊全局航点 -->
+    <!-- 走廊全局航点（与 second_testenv.launch 完全一致）-->
     <arg name="point_num" value="4"/>
 
     <!-- 航点 1：走廊左侧偏上 -->
@@ -154,13 +159,15 @@
     <arg name="point3_z" value="1.0"/>
   </include>
 
+  <!-- nonehall 纯走廊场景下关闭强制航点到达，避免主机在中间航点附近重规划风暴 -->
+  <param name="/ego_planner_node/fsm/max_waypoint_replan_attempts" value="6"/>
+
   <!-- 轨迹跟踪服务器 -->
   <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
     <param name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
     <param name="preflight_ok_topic"   value="/swarm/preflight/ok"/>
     <remap from="/position_cmd"  to="planning/pos_cmd"/>
     <remap from="/odom_world"    to="$(arg odom_topic)"/>
-    <remap from="planning/bezier" to="$(arg leader_corrected_topic)"/>
     <param name="traj_server/time_forward" value="1.0" type="double"/>
   </node>
 
@@ -188,7 +195,7 @@
     <arg name="map_size_x_" value="$(arg map_size_x)"/>
     <arg name="map_size_y_" value="$(arg map_size_y)"/>
     <arg name="map_size_z_" value="$(arg map_size_z)"/>
-    <arg name="map_type"    value="corridor"/>
+    <arg name="map_type"    value="corridor_empty"/>
     <arg name="init_x"      value="-18.0"/>
     <arg name="init_y"      value="0.0"/>
     <arg name="init_z"      value="1.0"/>
@@ -204,15 +211,17 @@
        ============================================================ -->
   <rosparam file="$(find ego_planner)/launch/swarm_master_params.yaml"
             command="load" ns="swarm_master_node"/>
-  <rosparam file="$(find ego_planner)/launch/swarm_longhall_fixed_schedule.yaml"
-            command="load" ns="swarm_master_node"/>
   <rosparam param="/swarm_master_node/swarm_master/agent_ids">[1, 2]</rosparam>
+    <param name="/swarm_master_node/swarm_master/use_fixed_obstacle_schedule" value="false"/>
+    <param name="/swarm_master_node/swarm_master/online_payload_opt_enabled" value="false" type="bool"/>
+    <param name="/swarm_master_node/swarm_master/online_payload_window_segs"
+      value="$(arg online_payload_window_segs)"/>
   <param name="/swarm_master_node/swarm_master/leader_bezier_topic"
          value="/planning/bezier"/>
-  <param name="/swarm_master_node/swarm_master/leader_corrected_topic"
-         value="$(arg leader_corrected_topic)"/>
-  <param name="/swarm_master_node/swarm_master/leader_state_topic"
-         value="$(arg odom_topic)"/>
+    <param name="/swarm_master_node/swarm_master/leader_corrected_topic"
+      value="$(arg leader_corrected_topic)"/>
+    <param name="/swarm_master_node/swarm_master/leader_state_topic"
+      value="$(arg odom_topic)"/>
 
   <!-- swarm_master 独立 GridMap 参数（pose_type=2 点云+里程计模式）-->
   <rosparam file="$(find ego_planner)/launch/swarm_master_grid_map.yaml"
@@ -220,6 +229,7 @@
 
   <node pkg="ego_planner" type="swarm_master_node"
         name="swarm_master_node" output="screen">
+    <param name="swarm_master/online_payload_opt_enabled" value="false" type="bool"/>
     <!-- GridMap 话题：接入主机传感器数据 -->
     <remap from="/grid_map/odom"  to="/visual_slam/odom"/>
     <remap from="/grid_map/cloud" to="/pcl_render_node/cloud"/>

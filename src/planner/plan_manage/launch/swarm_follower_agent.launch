@@ -9,6 +9,15 @@
     <arg name="guidance_topic" default="/swarm/agent_1/guidance_bezier"/>
     <arg name="state_topic" default="/swarm/agent_1/state"/>
     <arg name="guidance_min_start_time_delay" default="0.005"/>
+    <arg name="startup_hold_enabled" default="true"/>
+    <arg name="startup_guidance_ready_frames" default="5"/>
+    <arg name="startup_bridge_duration" default="0.75"/>
+    <arg name="startup_hover_timeout" default="0.40"/>
+    <arg name="startup_warmup_frames" default="15"/>
+    <arg name="startup_nominal_guidance_rate" default="20.0"/>
+    <arg name="startup_bridge_stitch_pos_margin" default="0.15"/>
+    <arg name="startup_bridge_max_stitch_speed" default="0.25"/>
+    <arg name="startup_bridge_use_s_curve_alpha" default="true"/>
 
     <!-- Visualization color only.
       IMPORTANT: This does NOT change dynamics/control; follower physics stays aligned with leader. -->
@@ -72,11 +81,27 @@
           <param name="use_local_map" value="false"/>
           <param name="min_start_time_delay" value="$(arg guidance_min_start_time_delay)"/>
           <param name="fallback_segment_dt" value="0.1"/>
+          <param name="stitch_time_margin"   value="0.12"/>
+          <param name="refine_window_segs"   value="5"/>
+          <param name="startup_hold_enabled" value="$(arg startup_hold_enabled)"/>
+          <param name="startup_guidance_ready_frames" value="$(arg startup_guidance_ready_frames)"/>
+          <param name="startup_bridge_duration" value="$(arg startup_bridge_duration)"/>
+          <param name="startup_hover_timeout" value="$(arg startup_hover_timeout)"/>
+          <param name="warmup_frames" value="$(arg startup_warmup_frames)"/>
+          <param name="startup_nominal_guidance_rate" value="$(arg startup_nominal_guidance_rate)"/>
+          <param name="startup_bridge_stitch_pos_margin" value="$(arg startup_bridge_stitch_pos_margin)"/>
+          <param name="startup_bridge_max_stitch_speed" value="$(arg startup_bridge_max_stitch_speed)"/>
+          <param name="startup_bridge_use_s_curve_alpha" value="$(arg startup_bridge_use_s_curve_alpha)"/>
 
           <param name="optimization/lambda_smooth" value="0.5"/>
           <param name="optimization/lambda_collision" value="5.0"/>
           <param name="optimization/lambda_feasibility" value="2.0"/>
-          <param name="optimization/lambda_fitness" value="1.0"/>
+          <!-- lambda_fitness(lambda4): 主机默认值为 1.0，此处设为 2.0（2×）。
+               增强从机局部优化时对 master 引导轨迹的回归拉力，
+               避障绕行后能更快收敛回编队轨迹，避免持续发散。
+               enable_collision_rebound=false / use_local_map=false 时
+               lambda_fitness 是唯一的轨迹形状约束，提权效果最直接。 -->
+          <param name="optimization/lambda_fitness" value="2.0"/>
           <param name="optimization/dist0" value="0.5"/>
           <param name="optimization/max_vel" value="2.0"/>
           <param name="optimization/max_acc" value="3.0"/>
@@ -84,52 +109,98 @@
 
           <remap from="~guidance_in" to="$(arg guidance_topic)"/>
           <remap from="~planning/bezier" to="planning/bezier"/>
+          <!-- 始终提供 odom（用于首次 guidance p_stitch 修正和 warmup 过渡）-->
+          <remap from="~odom_in" to="$(arg sim_odom_topic)"/>
         </node>
       </group>
 
       <group if="$(arg use_local_map)">
         <group unless="$(arg use_real_data)">
-          <rosparam file="$(find ego_planner)/launch/swarm_follower_local_map_sim.yaml" command="load"/>
-          <node pkg="ego_planner" type="swarm_follower_guidance_optimizer_node" name="swarm_follower_guidance_optimizer" output="screen">
-            <param name="enable_local_refine" value="true"/>
-            <param name="enable_collision_rebound" value="true"/>
-            <param name="use_local_map" value="true"/>
-            <param name="min_start_time_delay" value="$(arg guidance_min_start_time_delay)"/>
-            <param name="fallback_segment_dt" value="0.1"/>
+            <node pkg="ego_planner" type="swarm_follower_guidance_optimizer_node" name="swarm_follower_guidance_optimizer" output="screen">
+              <!-- rosparam 必须在 node 内加载，确保参数落在节点私有命名空间 ~ -->
+              <!-- 否则 GridMap 通过私有 NodeHandle 查找参数时会找不到 -->
+              <rosparam file="$(find ego_planner)/launch/swarm_follower_local_map_sim.yaml" command="load"/>
 
-            <param name="optimization/lambda_smooth" value="0.5"/>
-            <param name="optimization/lambda_collision" value="5.0"/>
-            <param name="optimization/lambda_feasibility" value="2.0"/>
-            <param name="optimization/lambda_fitness" value="1.0"/>
-            <param name="optimization/dist0" value="0.5"/>
-            <param name="optimization/max_vel" value="2.0"/>
-            <param name="optimization/max_acc" value="3.0"/>
-            <param name="optimization/order" value="3"/>
+              <param name="enable_local_refine" value="true"/>
+              <param name="enable_collision_rebound" value="true"/>
+              <param name="use_local_map" value="true"/>
+              <param name="min_start_time_delay" value="$(arg guidance_min_start_time_delay)"/>
+              <param name="fallback_segment_dt" value="0.1"/>
+              <param name="stitch_time_margin"   value="0.12"/>
+              <param name="refine_window_segs"   value="5"/>
+              <param name="startup_hold_enabled" value="$(arg startup_hold_enabled)"/>
+              <param name="startup_guidance_ready_frames" value="$(arg startup_guidance_ready_frames)"/>
+              <param name="startup_bridge_duration" value="$(arg startup_bridge_duration)"/>
+              <param name="startup_hover_timeout" value="$(arg startup_hover_timeout)"/>
+              <param name="warmup_frames" value="$(arg startup_warmup_frames)"/>
+              <param name="startup_nominal_guidance_rate" value="$(arg startup_nominal_guidance_rate)"/>
+              <param name="startup_bridge_stitch_pos_margin" value="$(arg startup_bridge_stitch_pos_margin)"/>
+              <param name="startup_bridge_max_stitch_speed" value="$(arg startup_bridge_max_stitch_speed)"/>
+              <param name="startup_bridge_use_s_curve_alpha" value="$(arg startup_bridge_use_s_curve_alpha)"/>
 
-            <remap from="~guidance_in" to="$(arg guidance_topic)"/>
-            <remap from="~planning/bezier" to="planning/bezier"/>
-            <remap from="/grid_map/odom" to="$(arg sim_odom_topic)"/>
-            <remap from="/grid_map/cloud" to="$(arg sim_cloud_topic)"/>
-          </node>
-        </group>
+              <param name="optimization/lambda_smooth" value="0.5"/>
+              <param name="optimization/lambda_collision" value="5.0"/>
+              <param name="optimization/lambda_feasibility" value="2.0"/>
+              <!-- lambda_fitness: 3.0，引导轨迹回归拉力（Rebound 后 Refine 用）-->
+              <param name="optimization/lambda_fitness" value="3.0"/>
+              <param name="optimization/dist0" value="0.5"/>
+              <param name="optimization/max_vel" value="2.0"/>
+              <param name="optimization/max_acc" value="3.0"/>
+              <param name="optimization/order" value="3"/>
+
+              <!-- 被动避障参数 -->
+              <param name="safety_look_ahead"  value="2.0"/>
+              <param name="safety_check_step"  value="0.05"/>
+              <param name="safety_cooldown"    value="0.25"/>
+
+              <!-- 关键 remap：引导话题与规划输出（原先缺失，导致节点完全不工作）-->
+              <remap from="~guidance_in" to="$(arg guidance_topic)"/>
+              <remap from="~planning/bezier" to="planning/bezier"/>
+
+              <!-- GridMap 话题：全局点云 + 从机自身 odom -->
+              <remap from="/grid_map/odom" to="$(arg sim_odom_topic)"/>
+              <remap from="/grid_map/cloud" to="$(arg sim_cloud_topic)"/>
+
+              <!-- 被动避障 odom -->
+              <remap from="~odom_in" to="$(arg sim_odom_topic)"/>
+            </node>
+          </group>
 
         <group if="$(arg use_real_data)">
-          <rosparam file="$(find ego_planner)/launch/swarm_follower_local_map_real.yaml" command="load"/>
-          <node pkg="ego_planner" type="swarm_follower_guidance_optimizer_node" name="swarm_follower_guidance_optimizer" output="screen">
+            <node pkg="ego_planner" type="swarm_follower_guidance_optimizer_node" name="swarm_follower_guidance_optimizer" output="screen">
+              <!-- rosparam 必须在 node 内加载，确保参数落在节点私有命名空间 ~ -->
+              <rosparam file="$(find ego_planner)/launch/swarm_follower_local_map_real.yaml" command="load"/>
             <param name="enable_local_refine" value="true"/>
             <param name="enable_collision_rebound" value="true"/>
             <param name="use_local_map" value="true"/>
             <param name="min_start_time_delay" value="$(arg guidance_min_start_time_delay)"/>
             <param name="fallback_segment_dt" value="0.1"/>
+            <param name="stitch_time_margin"   value="0.12"/>
+            <param name="refine_window_segs"   value="5"/>
+            <param name="startup_hold_enabled" value="$(arg startup_hold_enabled)"/>
+            <param name="startup_guidance_ready_frames" value="$(arg startup_guidance_ready_frames)"/>
+            <param name="startup_bridge_duration" value="$(arg startup_bridge_duration)"/>
+            <param name="startup_hover_timeout" value="$(arg startup_hover_timeout)"/>
+            <param name="warmup_frames" value="$(arg startup_warmup_frames)"/>
+            <param name="startup_nominal_guidance_rate" value="$(arg startup_nominal_guidance_rate)"/>
+            <param name="startup_bridge_stitch_pos_margin" value="$(arg startup_bridge_stitch_pos_margin)"/>
+            <param name="startup_bridge_max_stitch_speed" value="$(arg startup_bridge_max_stitch_speed)"/>
+            <param name="startup_bridge_use_s_curve_alpha" value="$(arg startup_bridge_use_s_curve_alpha)"/>
 
             <param name="optimization/lambda_smooth" value="0.5"/>
             <param name="optimization/lambda_collision" value="5.0"/>
             <param name="optimization/lambda_feasibility" value="2.0"/>
-            <param name="optimization/lambda_fitness" value="1.0"/>
+            <!-- lambda_fitness: 提升至 3.0 增强收敛（被动避障 Refine 回归拉力） -->
+            <param name="optimization/lambda_fitness" value="3.0"/>
             <param name="optimization/dist0" value="0.5"/>
             <param name="optimization/max_vel" value="2.0"/>
             <param name="optimization/max_acc" value="3.0"/>
             <param name="optimization/order" value="3"/>
+
+            <!-- 被动避障参数 -->
+            <param name="safety_look_ahead"  value="2.0"/>  <!-- 向前看 2 秒 -->
+            <param name="safety_check_step"  value="0.05"/> <!-- 20Hz 采样 -->
+            <param name="safety_cooldown"    value="0.25"/> <!-- 重规划冷却 0.25s -->
 
             <remap from="~guidance_in" to="$(arg guidance_topic)"/>
             <remap from="~planning/bezier" to="planning/bezier"/>
@@ -137,6 +208,9 @@
             <remap from="/grid_map/cloud" to="$(arg real_cloud_topic)"/>
             <remap from="/grid_map/depth" to="$(arg real_depth_topic)"/>
             <remap from="/grid_map/pose" to="$(arg real_pose_topic)"/>
+
+            <!-- odom remap（从机实机 odom 话题） -->
+            <remap from="~odom_in" to="$(arg real_odom_topic)"/>
           </node>
         </group>
       </group>

@@ -1,0 +1,29 @@
+Optimizer Comparison Summary
+=============================
+trials=30, seed=7, num_ctrl=16
+ts=0.35, max_vel=3.0, max_acc=4.0, lambda_smooth=1.0, lambda_feas=1.0, lambda_fit=0.2
+
+[BSpline]
+  mean_runtime_ms: 134.895707
+  mean_iterations: 220.000000
+  mean_eval_count: 237.233333
+  mean_initial_total_cost: 4459.644729
+  mean_final_total_cost: 564.231337
+  mean_cost_reduction_ratio: 0.859353
+  mean_feasibility_cost: 527.107606
+  mean_max_vel_violation: 3.792738
+  mean_max_acc_violation: 14.913690
+  converged_ratio: 0.000000
+
+[Bezier]
+  mean_runtime_ms: 54.513113
+  mean_iterations: 220.000000
+  mean_eval_count: 237.133333
+  mean_initial_total_cost: 827451.508375
+  mean_final_total_cost: 200.298520
+  mean_cost_reduction_ratio: 0.999712
+  mean_feasibility_cost: 191.950588
+  mean_max_vel_violation: 4.343534
+  mean_max_acc_violation: 1.227997
+  converged_ratio: 0.000000
+

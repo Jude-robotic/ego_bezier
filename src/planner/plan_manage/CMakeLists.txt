@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   std_srvs
   geometry_msgs
+  nav_msgs
   visualization_msgs
   quadrotor_msgs
   plan_env
@@ -96,7 +97,7 @@ add_executable(swarm_master_node
   src/swarm_master_node.cpp
   src/swarm_master_coordinator.cpp
 )
-target_link_libraries(swarm_master_node ${catkin_LIBRARIES})
+target_link_libraries(swarm_master_node ${catkin_LIBRARIES} bezier_opt plan_env)
 add_dependencies(swarm_master_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
 # Swarm agent state reporter (simulation/real-data compatible)
@@ -141,3 +142,9 @@ add_executable(swarm_guidance_traj_visualizer_node
 target_link_libraries(swarm_guidance_traj_visualizer_node ${catkin_LIBRARIES})
 add_dependencies(swarm_guidance_traj_visualizer_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
+# Swarm payload visualization node (actual/planned payload center and ropes)
+add_executable(swarm_payload_visualizer_node
+  src/swarm_payload_visualizer_node.cpp
+)
+target_link_libraries(swarm_payload_visualizer_node ${catkin_LIBRARIES} bezier_opt)
+add_dependencies(swarm_payload_visualizer_node ${${PROJECT_NAME}_EXPORTED_TARGETS})

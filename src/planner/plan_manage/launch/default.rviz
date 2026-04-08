@@ -321,6 +321,22 @@ Visualization Manager:
             {}
           Queue Size: 100
           Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /swarm/payload_viz/markers
+          Name: payload_viz
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /swarm/master/obs_state_marker
+          Name: obs_state_text
+          Namespaces:
+            obs_state: true
+          Queue Size: 5
+          Value: true
       Enabled: true
       Name: Swarm
     - Class: rviz/PointCloud2

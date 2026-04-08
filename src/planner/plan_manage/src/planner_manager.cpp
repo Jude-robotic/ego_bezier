@@ -60,7 +60,7 @@ namespace ego_planner
          << "\ngoal:" << local_target_pt.transpose() << ", " << local_target_vel.transpose() << endl;
     cout << "height limits: [" << min_flight_height << ", " << max_flight_height << "]" << endl;
 
-    if ((start_pt - local_target_pt).norm() < 0.2)
+    if ((start_pt - local_target_pt).norm() < 0.05)
     {
       cout << "Close to goal" << endl;
       continous_failures_count_++;
@@ -257,7 +257,7 @@ namespace ego_planner
 
     /*** STEP 2: OPTIMIZE ***/
     bool flag_step_1_success = bezier_optimizer_rebound_->BezierOptimizeTrajRebound(ctrl_pts, ts);
-    cout << "first_optimize_step_success=" << flag_step_1_success << endl;
+//     cout << "first_optimize_step_success=" << flag_step_1_success << endl;
     
     // 如果直接优化失败，尝试使用 A* 搜索安全路径作为初始轨迹
     if (!flag_step_1_success)
@@ -336,7 +336,7 @@ namespace ego_planner
         
         // 重新优化
         flag_step_1_success = bezier_optimizer_rebound_->BezierOptimizeTrajRebound(a_star_ctrl_pts, ts);
-        cout << "A* guided optimization success=" << flag_step_1_success << endl;
+//         cout << "A* guided optimization success=" << flag_step_1_success << endl;
         
         if (flag_step_1_success)
         {
@@ -366,7 +366,7 @@ namespace ego_planner
     bool flag_step_2_success = true;
     if (!pos.checkFeasibility(ratio, false))
     {
-      cout << "Need to reallocate time." << endl;
+//       cout << "Need to reallocate time." << endl;
 
       Eigen::MatrixXd optimal_control_points;
       flag_step_2_success = refineTrajAlgo(pos, start_end_derivatives, ratio, ts, optimal_control_points);
@@ -386,7 +386,7 @@ namespace ego_planner
     // Save planned results
     updateTrajInfo(pos, ros::Time::now());
 
-    cout << "total time:\033[42m" << (t_init + t_opt + t_refine).toSec() << "\033[0m,optimize:" << (t_init + t_opt).toSec() << ",refine:" << t_refine.toSec() << endl;
+//     cout << "total time:\033[42m" << (t_init + t_opt + t_refine).toSec() << "\033[0m,optimize:" << (t_init + t_opt).toSec() << ",refine:" << t_refine.toSec() << endl;
 
     continous_failures_count_ = 0;
     return true;

@@ -263,7 +263,7 @@ namespace ego_planner
     static string state_str[7] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP"};
     int pre_s = int(exec_state_);
     exec_state_ = new_state;
-    cout << "[" + pos_call + "]: from " + state_str[pre_s] + " to " + state_str[int(new_state)] << endl;
+//     cout << "[" + pos_call + "]: from " + state_str[pre_s] + " to " + state_str[int(new_state)] << endl;
   }
 
   std::pair<int, EGOReplanFSM::FSM_EXEC_STATE> EGOReplanFSM::timesOfConsecutiveStateCalls()
@@ -550,7 +550,7 @@ namespace ego_planner
                                                         flag_randomPolyTraj);
     have_new_target_ = false;
 
-    cout << "final_plan_success=" << plan_success << endl;
+//     cout << "final_plan_success=" << plan_success << endl;
 
     if (plan_success)
     {
@@ -912,8 +912,8 @@ namespace ego_planner
         if (planToCurrentWaypoint())
         {
           have_target_ = true;
-          have_new_target_ = true;
-          changeFSMExecState(GEN_NEW_TRAJ, "NEW_WAYPOINT");
+          have_new_target_ = false;          // REPLAN 分支不需要 poly_init 标志
+          changeFSMExecState(REPLAN_TRAJ, "NEW_WAYPOINT");
         }
       }
     }
@@ -972,11 +972,22 @@ namespace ego_planner
       start_vel = dir * planner_manager_->pp_.max_vel_ * 0.3;
     }
     
+    // 计算全局轨迹末端速度：
+    // - 若还有多个 remaining 航点，末速指向最后一段方向，保持穿越动量
+    // - 若只剩一个（最终目标），末速为零以确保精确停止
+    Eigen::Vector3d end_vel = Eigen::Vector3d::Zero();
+    if (remaining_wps.size() >= 2)
+    {
+      Eigen::Vector3d last_seg =
+          (remaining_wps.back() - remaining_wps[remaining_wps.size() - 2]).normalized();
+      end_vel = last_seg * planner_manager_->pp_.max_vel_ * 0.3;
+    }
+
     // 规划全局轨迹 - 只有最终目标使用零速度
     bool success = planner_manager_->planGlobalTrajWaypoints(
         odom_pos_, start_vel, Eigen::Vector3d::Zero(),
         remaining_wps,
-        Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+        end_vel, Eigen::Vector3d::Zero());
     
     if (success)
     {

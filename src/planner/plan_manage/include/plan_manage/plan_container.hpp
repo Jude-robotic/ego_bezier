@@ -8,6 +8,7 @@
 
 #include <Eigen/Eigen>
 #include <vector>
+#include <algorithm>
 #include <ros/ros.h>
 
 #include <bezier_opt/piecewise_bezier.h>
@@ -71,6 +72,12 @@ namespace ego_planner
 
     Eigen::Vector3d getPosition(double t)
     {
+      if (local_traj_.size() < 3 || local_start_time_ < 0.0 || local_end_time_ < 0.0)
+      {
+        double t_safe = std::max(0.0, std::min(t, global_duration_));
+        return global_traj_.evaluate(t_safe);
+      }
+
       if (t >= -1e-3 && t <= local_start_time_)
       {
         return global_traj_.evaluate(t - time_increase_ + last_time_inc_);
@@ -89,6 +96,12 @@ namespace ego_planner
 
     Eigen::Vector3d getVelocity(double t)
     {
+      if (local_traj_.size() < 3 || local_start_time_ < 0.0 || local_end_time_ < 0.0)
+      {
+        double t_safe = std::max(0.0, std::min(t, global_duration_));
+        return global_traj_.evaluateVel(t_safe);
+      }
+
       if (t >= -1e-3 && t <= local_start_time_)
       {
         return global_traj_.evaluateVel(t);
@@ -107,6 +120,12 @@ namespace ego_planner
 
     Eigen::Vector3d getAcceleration(double t)
     {
+      if (local_traj_.size() < 3 || local_start_time_ < 0.0 || local_end_time_ < 0.0)
+      {
+        double t_safe = std::max(0.0, std::min(t, global_duration_));
+        return global_traj_.evaluateAcc(t_safe);
+      }
+
       if (t >= -1e-3 && t <= local_start_time_)
       {
         return global_traj_.evaluateAcc(t);

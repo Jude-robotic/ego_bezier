@@ -416,6 +416,67 @@ void clickCallback(const geometry_msgs::PoseStamped& msg) {
 
   return;
 }
+// Generate an empty corridor map (boundary walls only, no obstacles)
+// 用于 swarm_nonehall.launch：只有走廊围墙，内部完全无障碍
+void GenerateEmptyCorridorMap() {
+  pcl::PointXYZ pt;
+
+  // Corridor parameters: 40x10x3 meters, centered at origin
+  double corridor_length = 40.0;  // X direction
+  double corridor_width  = 10.0;  // Y direction
+  double corridor_height = _z_size;
+  double wall_thickness  = 0.3;
+
+  // Left wall (y = -corridor_width/2)
+  for (double x = -corridor_length/2; x <= corridor_length/2; x += _resolution) {
+    for (double y = -corridor_width/2 - wall_thickness; y <= -corridor_width/2; y += _resolution) {
+      for (double z = 0; z <= corridor_height; z += _resolution) {
+        pt.x = x; pt.y = y; pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+
+  // Right wall (y = corridor_width/2)
+  for (double x = -corridor_length/2; x <= corridor_length/2; x += _resolution) {
+    for (double y = corridor_width/2; y <= corridor_width/2 + wall_thickness; y += _resolution) {
+      for (double z = 0; z <= corridor_height; z += _resolution) {
+        pt.x = x; pt.y = y; pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+
+  // Front wall (x = -corridor_length/2)
+  for (double x = -corridor_length/2 - wall_thickness; x <= -corridor_length/2; x += _resolution) {
+    for (double y = -corridor_width/2; y <= corridor_width/2; y += _resolution) {
+      for (double z = 0; z <= corridor_height; z += _resolution) {
+        pt.x = x; pt.y = y; pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+
+  // Back wall (x = corridor_length/2)
+  for (double x = corridor_length/2; x <= corridor_length/2 + wall_thickness; x += _resolution) {
+    for (double y = -corridor_width/2; y <= corridor_width/2; y += _resolution) {
+      for (double z = 0; z <= corridor_height; z += _resolution) {
+        pt.x = x; pt.y = y; pt.z = z;
+        cloudMap.push_back(pt);
+      }
+    }
+  }
+
+  cloudMap.width  = cloudMap.points.size();
+  cloudMap.height = 1;
+  cloudMap.is_dense = true;
+
+  ROS_WARN("Finished generating EMPTY corridor map (40x10x%.1fm), no obstacles inside", corridor_height);
+
+  kdtreeLocalMap.setInputCloud(cloudMap.makeShared());
+  _map_ok = true;
+}
+
 // Generate a fixed cross-wall map，用于first_testenv.launch
 void GenerateFixedCrossWallMap() {
   pcl::PointXYZ pt;
@@ -475,118 +536,134 @@ void GenerateFixedCrossWallMap() {
     }
   }
   
-  // ========== Generate obstacles in corridor ==========
-  
-  // Obstacle 1: 3m high cylinder at x=-12
-  double cyl1_x = -14.0;
-  double cyl1_y = 2.0;
-  double cyl1_radius = 1.5;
-  double cyl1_height = 3.0;
-  for (double x = cyl1_x - cyl1_radius; x <= cyl1_x + cyl1_radius; x += _resolution) {
-    for (double y = cyl1_y - cyl1_radius; y <= cyl1_y + cyl1_radius; y += _resolution) {
-      if (sqrt(pow(x - cyl1_x, 2) + pow(y - cyl1_y, 2)) <= cyl1_radius) {
-        for (double z = 0; z <= cyl1_height; z += _resolution) {
-          pt.x = x;
-          pt.y = y;
-          pt.z = z;
+  // ========== Door-frame obstacles for swarm_longhall ==========
+  //
+  // Design goal:
+  //   gap_width = 1.3 m  →  single drone (body ~0.4m) can pass,
+  //                          V-formation span (~2.24m) cannot pass.
+  //
+  // Leader waypoints: (-18,0) → (-10,3) → (0,-4) → (10,3) → (18,0)
+  // Gap center Y is set to the interpolated leader Y at each gate X.
+  //
+  //   Gate 1  x=-12  gap_center_y= 1.5   (segment 1: y goes 0→3)
+  //   Gate 2  x= -2  gap_center_y=-2.5   (segment 2: y goes 3→-4)
+  //   Gate 3  x=  6  gap_center_y=-0.5   (segment 3: y goes -4→3)
+  //   Gate 4  x= 14  gap_center_y= 1.5   (segment 4: y goes 3→0)
+
+  const double gap_half      = 0.65;   // half of 1.3m gap
+  const double frame_thick   = 0.40;   // wall thickness in X
+  const double frame_height  = corridor_height;  // floor-to-ceiling
+
+  // Lambda-like macro: emit one door-frame wall (two panels, one gap)
+  // Because C++03/11 lambdas capturing locals work fine here:
+  auto addDoorFrame = [&](double fx, double fy) {
+    for (double dx = -frame_thick / 2.0; dx <= frame_thick / 2.0; dx += _resolution) {
+      double x = fx + dx;
+      // Left panel: y in [-corridor_width/2 , fy - gap_half]
+      for (double y = -corridor_width / 2.0; y <= fy - gap_half; y += _resolution)
+        for (double z = 0.0; z <= frame_height; z += _resolution) {
+          pt.x = x; pt.y = y; pt.z = z;
+          cloudMap.push_back(pt);
+        }
+      // Right panel: y in [fy + gap_half , +corridor_width/2]
+      for (double y = fy + gap_half; y <= corridor_width / 2.0; y += _resolution)
+        for (double z = 0.0; z <= frame_height; z += _resolution) {
+          pt.x = x; pt.y = y; pt.z = z;
+          cloudMap.push_back(pt);
+        }
+    }
+  };
+
+  // Gate 1 — x=-12, gap centered at y=+1.5
+  addDoorFrame(-12.0,  1.5);
+  // Gate 3 — x= +6, gap centered at y=-0.5
+  addDoorFrame(  6.0, -0.5);
+
+  // ========== Floating Ring obstacle (toroidal, passable through center) ==========
+  // 圆环中心在走廊中央，主机可从中心穿过，编队需要收拢或变换
+  {
+    const double ring_x = -7.0;
+    const double ring_y = 1.0;
+    const double ring_z = 1.5;
+    const double ring_major_r = 1.8;  // 大圆半径（圆环中心到管道中心的距离）
+    const double ring_minor_r = 0.4;  // 管道半径（管壁厚度）
+    // 圆环轴线沿 X 方向（即圆环平面是 YZ 平面），无人机沿 X 飞行可穿过中心
+    for (double theta = 0.0; theta < 2.0 * M_PI; theta += 0.08) {
+      // 圆环骨架点（在 YZ 平面上的大圆）
+      double cy = ring_y + ring_major_r * cos(theta);
+      double cz = ring_z + ring_major_r * sin(theta);
+      // 围绕骨架点生成管道截面
+      for (double phi = 0.0; phi < 2.0 * M_PI; phi += 0.15) {
+        pt.x = ring_x + ring_minor_r * 0.5 * cos(phi);  // X 方向管壁薄一些
+        pt.y = cy + ring_minor_r * cos(phi) * cos(theta);
+        pt.z = cz + ring_minor_r * sin(phi);
+        if (pt.z > 0.05)  // 不低于地面
+          cloudMap.push_back(pt);
+      }
+    }
+    ROS_INFO("Added floating ring at (%.1f, %.1f, %.1f), major_r=%.1f",
+             ring_x, ring_y, ring_z, ring_major_r);
+  }
+
+  // ========== Z-axis narrow slit (ceiling lowered + floor raised, 1.0m vertical gap) ==========
+  // 水平方向全开放（XY 平面可自由通过），但 Z 轴只留 0.8~1.8m 的缝隙
+  // 迫使编队在垂直方向压扁——与门框的 Z 轴避障策略形成对比
+  {
+    const double slit_x = -2.0;
+    const double slit_thick = 0.4;    // X 方向厚度
+    const double slit_gap_low  = 0.6; // 缝隙下沿 Z
+    const double slit_gap_high = 2.0; // 缝隙上沿 Z
+    for (double x = slit_x - slit_thick / 2.0; x <= slit_x + slit_thick / 2.0; x += _resolution) {
+      for (double y = -corridor_width / 2.0; y <= corridor_width / 2.0; y += _resolution) {
+        // 底部墙体：z = 0 到 slit_gap_low
+        for (double z = 0.0; z <= slit_gap_low; z += _resolution) {
+          pt.x = x; pt.y = y; pt.z = z;
+          cloudMap.push_back(pt);
+        }
+        // 顶部墙体：z = slit_gap_high 到 corridor_height
+        for (double z = slit_gap_high; z <= corridor_height; z += _resolution) {
+          pt.x = x; pt.y = y; pt.z = z;
           cloudMap.push_back(pt);
         }
       }
     }
+    ROS_INFO("Added Z-axis narrow slit at x=%.1f, passable z=[%.1f, %.1f]",
+             slit_x, slit_gap_low, slit_gap_high);
   }
-  
-  // Obstacle 2: 3m high cube at x=-6
-  double cube1_x = -6.0;
-  double cube1_y = 0.0;
-  double cube1_size = 1.5;
-  double cube1_height = 3.0;
-  for (double x = cube1_x - cube1_size/2; x <= cube1_x + cube1_size/2; x += _resolution) {
-    for (double y = cube1_y - cube1_size/2; y <= cube1_y + cube1_size/2; y += _resolution) {
-      for (double z = 0; z <= cube1_height; z += _resolution) {
-        pt.x = x;
-        pt.y = y;
-        pt.z = z;
-        cloudMap.push_back(pt);
-      }
-    }
-  }
-  
-  // Obstacle 3: 1m high rectangular box at x=0
-  double box1_x = 0.0;
-  double box1_y = 2.5;
-  double box1_length = 2.0;  // X direction
-  double box1_width = 1.0;   // Y direction
-  double box1_height = 1.0;
-  for (double x = box1_x - box1_length/2; x <= box1_x + box1_length/2; x += _resolution) {
-    for (double y = box1_y - box1_width/2; y <= box1_y + box1_width/2; y += _resolution) {
-      for (double z = 0; z <= box1_height; z += _resolution) {
-        pt.x = x;
-        pt.y = y;
-        pt.z = z;
-        cloudMap.push_back(pt);
-      }
-    }
-  }
-  
-  // Obstacle 4: 1m diameter sphere suspended at 2m height, center at x=6
-  double sphere1_x = 6.0;
-  double sphere1_y = 0.0;
-  double sphere1_z_center = 2.5;  // Center at 2.5m, so bottom at 2m, top at 3m
-  double sphere1_radius = 1.2;
-  for (double x = sphere1_x - sphere1_radius; x <= sphere1_x + sphere1_radius; x += _resolution) {
-    for (double y = sphere1_y - sphere1_radius; y <= sphere1_y + sphere1_radius; y += _resolution) {
-      for (double z = sphere1_z_center - sphere1_radius; z <= sphere1_z_center + sphere1_radius; z += _resolution) {
-        double dist = sqrt(pow(x - sphere1_x, 2) + pow(y - sphere1_y, 2) + pow(z - sphere1_z_center, 2));
-        if (dist <= sphere1_radius) {
-          pt.x = x;
-          pt.y = y;
-          pt.z = z;
+
+  // ========== Second floating ring (larger, tilted 15 deg around Y) ==========
+  {
+    const double ring2_x = 14.0;
+    const double ring2_y = 1.5;
+    const double ring2_z = 1.5;
+    const double ring2_major_r = 1.4;
+    const double ring2_minor_r = 0.35;
+    const double tilt = 15.0 * M_PI / 180.0;  // 绕 Y 轴倾斜 15 度
+    for (double theta = 0.0; theta < 2.0 * M_PI; theta += 0.08) {
+      double cy = ring2_y + ring2_major_r * cos(theta);
+      double cz = ring2_z + ring2_major_r * sin(theta);
+      for (double phi = 0.0; phi < 2.0 * M_PI; phi += 0.15) {
+        double local_x = ring2_minor_r * cos(phi);
+        double local_y = ring2_minor_r * cos(phi) * cos(theta);
+        double local_z = ring2_minor_r * sin(phi);
+        // 施加 Y 轴倾斜
+        pt.x = ring2_x + local_x * cos(tilt) - (cz - ring2_z + local_z) * sin(tilt);
+        pt.y = cy + local_y;
+        pt.z = ring2_z + local_x * sin(tilt) + (cz - ring2_z + local_z) * cos(tilt);
+        if (pt.z > 0.05)
           cloudMap.push_back(pt);
-        }
       }
     }
+    ROS_INFO("Added tilted ring at (%.1f, %.1f, %.1f), major_r=%.1f, tilt=15deg",
+             ring2_x, ring2_y, ring2_z, ring2_major_r);
   }
-  
-  // Obstacle 5: 1m cube suspended at 2m height, center at x=12
-  double cube2_x = 10.0;
-  double cube2_y = -2.5;
-  double cube2_z_bottom = 2.0;  // Bottom at 2m
-  double cube2_size = 1.0;
-  for (double x = cube2_x - cube2_size/2; x <= cube2_x + cube2_size/2; x += _resolution) {
-    for (double y = cube2_y - cube2_size/2; y <= cube2_y + cube2_size/2; y += _resolution) {
-      for (double z = cube2_z_bottom; z <= cube2_z_bottom + cube2_size; z += _resolution) {
-        pt.x = x;
-        pt.y = y;
-        pt.z = z;
-        cloudMap.push_back(pt);
-      }
-    }
-  }
-  
-  // Obstacle 6: Another 3m high cylinder at x=16 (near end)
-  double cyl2_x = 16.0;
-  double cyl2_y = 1.5;
-  double cyl2_radius = 0.6;
-  double cyl2_height = 3.0;
-  for (double x = cyl2_x - cyl2_radius; x <= cyl2_x + cyl2_radius; x += _resolution) {
-    for (double y = cyl2_y - cyl2_radius; y <= cyl2_y + cyl2_radius; y += _resolution) {
-      if (sqrt(pow(x - cyl2_x, 2) + pow(y - cyl2_y, 2)) <= cyl2_radius) {
-        for (double z = 0; z <= cyl2_height; z += _resolution) {
-          pt.x = x;
-          pt.y = y;
-          pt.z = z;
-          cloudMap.push_back(pt);
-        }
-      }
-    }
-  }
-  
+
   cloudMap.width = cloudMap.points.size();
   cloudMap.height = 1;
   cloudMap.is_dense = true;
-  
-  ROS_WARN("Finished generating corridor map (40x10x3m) with 6 obstacles");
-  
+
+  ROS_WARN("Finished generating corridor map (40x10x3m) with 4 door-frame gates + 2 rings + 1 Z-slit");
+
   kdtreeLocalMap.setInputCloud(cloudMap.makeShared());
   _map_ok = true;
 }
@@ -1042,6 +1119,8 @@ int main(int argc, char** argv) {
     GenerateFixedObstacleMap();
   } else if (map_type == "corridor") {
     GenerateFixedCrossWallMap();  // Now generates corridor map
+  } else if (map_type == "corridor_empty") {
+    GenerateEmptyCorridorMap();   // Empty corridor, no obstacles
   } else if (map_type == "inclined_corridor") {
     GenerateInclinedCorridorMap();  // 30-degree inclined corridor
   } else {

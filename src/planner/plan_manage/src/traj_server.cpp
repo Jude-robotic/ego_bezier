@@ -157,12 +157,25 @@ void bezierCallback(ego_planner::BezierConstPtr msg)
   traj_.push_back(traj_[0].getDerivative());
   traj_.push_back(traj_[1].getDerivative());
 
-  start_time_ = msg->start_time;
   traj_id_ = msg->traj_id;
   traj_duration_ = traj_[0].getTimeSum();
 
   // 重置轨迹完成标志
   traj_completed_ = false;
+
+  // 首次轨迹（从机起飞）：将 start_time 修正为当前时刻
+  // 消除主机时间戳延迟导致的 t_cur 初始非零，确保从 P0（已设为从机当前位置）出发
+  if (!receive_traj_)
+  {
+    const double lag = (ros::Time::now() - msg->start_time).toSec();
+    ROS_INFO("[Traj Server] First trajectory: overriding start_time to now "
+             "(lag=%.3f s, traj_id=%d)", lag, traj_id_);
+    start_time_ = ros::Time::now();
+  }
+  else
+  {
+    start_time_ = msg->start_time;
+  }
 
   receive_traj_ = true;
 
@@ -228,7 +241,11 @@ void cmdCallback(const ros::TimerEvent &e)
   }
 
   if (!receive_traj_)
+  {
+    // Keep the vehicle stationary before the first trajectory arrives.
+    publishHoldCommand(time_now);
     return;
+  }
 
   double t_cur = (time_now - start_time_).toSec();
   static ros::Time time_last = ros::Time::now();

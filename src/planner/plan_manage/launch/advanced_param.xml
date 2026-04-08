@@ -36,6 +36,11 @@
 
   <arg name="flight_type"/>
 
+  <!-- 可选FSM/局部坐标开关，默认保持原行为 -->
+  <arg name="use_mandatory_waypoints" default="true"/>
+  <arg name="local_frame_enable" default="true"/>
+  <arg name="local_frame_auto_update" default="true"/>
+
   <!-- 可选的高度限制参数 (Optional height limit parameters) -->
   <arg name="ground_height" default="0.0"/>
   <arg name="virtual_ceil_height" default="2.5"/>
@@ -59,7 +64,7 @@
     <param name="fsm/emergency_time_" value="1.0" type="double"/>
     
     <!-- 航点强制到达参数 (Mandatory Waypoint Reaching) -->
-    <param name="fsm/use_mandatory_waypoints" value="true" type="bool"/>
+    <param name="fsm/use_mandatory_waypoints" value="$(arg use_mandatory_waypoints)" type="bool"/>
     <param name="fsm/waypoint_reach_thresh" value="0.8" type="double"/>
     <param name="fsm/max_waypoint_replan_attempts" value="20" type="int"/>
     <param name="fsm/max_waypoint_approach_time" value="60.0" type="double"/>
@@ -117,8 +122,8 @@
     <param name="grid_map/frame_id"      value="world"/>
 
   <!-- 局部参考坐标系统 (Local Coordinate System) -->
-    <param name="local_frame/enable" value="true" type="bool"/>
-    <param name="local_frame/auto_update" value="true" type="bool"/>
+    <param name="local_frame/enable" value="$(arg local_frame_enable)" type="bool"/>
+    <param name="local_frame/auto_update" value="$(arg local_frame_auto_update)" type="bool"/>
     <param name="local_frame/update_thresh" value="5.0" type="double"/>
     <param name="local_frame/map_size_x" value="40.0" type="double"/>
     <param name="local_frame/map_size_y" value="40.0" type="double"/>

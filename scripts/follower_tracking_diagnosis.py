@@ -322,85 +322,123 @@ def _draw_no_data(axs, title: str):
     axs[0].text(0.5, 0.5, "数据不足，无法绘制", ha="center", va="center", fontsize=12)
 
 
-def plot_position_error(agent_id: int, d: dict, save_path: str, show: bool):
+def plot_position_tracking(agent_id: int, d: dict, save_path: str, show: bool):
     if not show:
         _mpl.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, axs = plt.subplots(4, 1, figsize=(13, 10), sharex=True)
-    fig.suptitle(f"UAV{agent_id} 位置跟踪误差 (x/y/z)", fontsize=14, fontweight="bold")
+    fig.suptitle(f"UAV{agent_id} 位置跟踪: 期望值 vs 实际值", fontsize=14, fontweight="bold")
 
     if len(d["t"]) < 3:
-        _draw_no_data(axs, f"UAV{agent_id} 位置跟踪误差")
+        _draw_no_data(axs, f"UAV{agent_id} 位置跟踪")
         _save_and_optionally_show(fig, save_path, show)
         return
 
     t = np.array(d["t"])
-    ex = np.array(d["ex"])
-    ey = np.array(d["ey"])
-    ez = np.array(d["ez"])
-    e_total = np.sqrt(ex**2 + ey**2 + ez**2)
+    x_des = np.array(d["x_des"])
+    y_des = np.array(d["y_des"])
+    z_des = np.array(d["z_des"])
+    x_act = np.array(d["x_act"])
+    y_act = np.array(d["y_act"])
+    z_act = np.array(d["z_act"])
 
-    axs[0].plot(t, ex, color="#F44336", linewidth=1.1)
-    axs[0].axhline(0, color="black", linewidth=0.8)
-    axs[0].set_ylabel("e_x [m]")
-    axs[0].grid(True, alpha=0.35)
+    p_des_norm = np.sqrt(x_des**2 + y_des**2 + z_des**2)
+    p_act_norm = np.sqrt(x_act**2 + y_act**2 + z_act**2)
 
-    axs[1].plot(t, ey, color="#2196F3", linewidth=1.1)
-    axs[1].axhline(0, color="black", linewidth=0.8)
-    axs[1].set_ylabel("e_y [m]")
-    axs[1].grid(True, alpha=0.35)
+    pos_items = [
+        ("x", x_des, x_act, "#1E88E5", "#F4511E"),
+        ("y", y_des, y_act, "#1E88E5", "#F4511E"),
+        ("z", z_des, z_act, "#1E88E5", "#F4511E"),
+        ("|p|", p_des_norm, p_act_norm, "#3949AB", "#FB8C00"),
+    ]
 
-    axs[2].plot(t, ez, color="#4CAF50", linewidth=1.1)
-    axs[2].axhline(0, color="black", linewidth=0.8)
-    axs[2].set_ylabel("e_z [m]")
-    axs[2].grid(True, alpha=0.35)
+    for i, (label, des, act, c_des, c_act) in enumerate(pos_items):
+        axs[i].plot(t, des, color=c_des, linewidth=1.2, label=f"期望{label}")
+        axs[i].plot(t, act, color=c_act, linewidth=1.0, alpha=0.95, label=f"实际{label}")
+        axs[i].fill_between(
+            t,
+            des,
+            act,
+            color="#FFB74D",
+            alpha=0.24,
+            label="包络区间(期望-实际)" if i == 0 else None,
+        )
+        rmse = np.sqrt(np.mean((act - des) ** 2))
+        axs[i].text(
+            0.01,
+            0.88,
+            f"RMSE={rmse:.3f}m",
+            transform=axs[i].transAxes,
+            fontsize=8,
+            color="#B71C1C",
+        )
+        axs[i].set_ylabel(f"{label} [m]")
+        axs[i].grid(True, alpha=0.35)
 
-    axs[3].plot(t, e_total, color="#FF9800", linewidth=1.3)
-    axs[3].set_ylabel("|e| [m]")
     axs[3].set_xlabel("时间 t [s]")
+    axs[0].legend(loc="upper right", fontsize=8)
     axs[3].grid(True, alpha=0.35)
 
     _save_and_optionally_show(fig, save_path, show)
 
 
-def plot_angle_error(agent_id: int, d: dict, save_path: str, show: bool):
+def plot_attitude_tracking(agent_id: int, d: dict, save_path: str, show: bool):
     if not show:
         _mpl.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, axs = plt.subplots(4, 1, figsize=(13, 10), sharex=True)
-    fig.suptitle(f"UAV{agent_id} 姿态跟踪误差 (pitch/yaw/roll)", fontsize=14, fontweight="bold")
+    fig.suptitle(f"UAV{agent_id} 姿态跟踪: 期望值 vs 实际值", fontsize=14, fontweight="bold")
 
     if len(d["t"]) < 3:
-        _draw_no_data(axs, f"UAV{agent_id} 姿态跟踪误差")
+        _draw_no_data(axs, f"UAV{agent_id} 姿态跟踪")
         _save_and_optionally_show(fig, save_path, show)
         return
 
     t = np.array(d["t"])
-    e_pitch = np.rad2deg(np.array(d["e_pitch"]))
-    e_yaw = np.rad2deg(np.array(d["e_yaw"]))
-    e_roll = np.rad2deg(np.array(d["e_roll"]))
-    e_total = np.sqrt(e_pitch**2 + e_yaw**2 + e_roll**2)
+    pitch_des = np.rad2deg(np.array(d["pitch_des"]))
+    yaw_des = np.rad2deg(np.array(d["yaw_des"]))
+    roll_des = np.rad2deg(np.array(d["roll_des"]))
+    pitch_act = np.rad2deg(np.array(d["pitch_act"]))
+    yaw_act = np.rad2deg(np.array(d["yaw_act"]))
+    roll_act = np.rad2deg(np.array(d["roll_act"]))
 
-    axs[0].plot(t, e_pitch, color="#2196F3", linewidth=1.1)
-    axs[0].axhline(0, color="black", linewidth=0.8)
-    axs[0].set_ylabel("e_pitch [deg]")
-    axs[0].grid(True, alpha=0.35)
+    ang_des_norm = np.sqrt(roll_des**2 + pitch_des**2 + yaw_des**2)
+    ang_act_norm = np.sqrt(roll_act**2 + pitch_act**2 + yaw_act**2)
 
-    axs[1].plot(t, e_yaw, color="#9C27B0", linewidth=1.1)
-    axs[1].axhline(0, color="black", linewidth=0.8)
-    axs[1].set_ylabel("e_yaw [deg]")
-    axs[1].grid(True, alpha=0.35)
+    att_items = [
+        ("pitch", pitch_des, pitch_act, "#1E88E5", "#F4511E"),
+        ("yaw", yaw_des, yaw_act, "#1E88E5", "#F4511E"),
+        ("roll", roll_des, roll_act, "#1E88E5", "#F4511E"),
+        ("|rpy|", ang_des_norm, ang_act_norm, "#3949AB", "#FB8C00"),
+    ]
 
-    axs[2].plot(t, e_roll, color="#F44336", linewidth=1.1)
-    axs[2].axhline(0, color="black", linewidth=0.8)
-    axs[2].set_ylabel("e_roll [deg]")
-    axs[2].grid(True, alpha=0.35)
+    for i, (label, des, act, c_des, c_act) in enumerate(att_items):
+        axs[i].plot(t, des, color=c_des, linewidth=1.2, label=f"期望{label}")
+        axs[i].plot(t, act, color=c_act, linewidth=1.0, alpha=0.95, label=f"实际{label}")
+        axs[i].fill_between(
+            t,
+            des,
+            act,
+            color="#FFB74D",
+            alpha=0.24,
+            label="包络区间(期望-实际)" if i == 0 else None,
+        )
+        rmse = np.sqrt(np.mean((act - des) ** 2))
+        axs[i].text(
+            0.01,
+            0.88,
+            f"RMSE={rmse:.3f}deg",
+            transform=axs[i].transAxes,
+            fontsize=8,
+            color="#B71C1C",
+        )
+        axs[i].set_ylabel(f"{label} [deg]")
+        axs[i].grid(True, alpha=0.35)
 
-    axs[3].plot(t, e_total, color="#FF9800", linewidth=1.3)
-    axs[3].set_ylabel("|e| [deg]")
     axs[3].set_xlabel("时间 t [s]")
+    axs[0].legend(loc="upper right", fontsize=8)
     axs[3].grid(True, alpha=0.35)
 
     _save_and_optionally_show(fig, save_path, show)
@@ -513,8 +551,8 @@ def main():
     for aid in [1, 2]:
         pos_path = os.path.join(save_dir, f"uav_{aid}_line_{_timestamp}.png")
         ang_path = os.path.join(save_dir, f"uav_{aid}_angle_{_timestamp}.png")
-        plot_position_error(aid, logger.data[aid], pos_path, args.show)
-        plot_angle_error(aid, logger.data[aid], ang_path, args.show)
+        plot_position_tracking(aid, logger.data[aid], pos_path, args.show)
+        plot_attitude_tracking(aid, logger.data[aid], ang_path, args.show)
 
     print(f"[INFO] 4张图像已输出到目录: {save_dir}")
 
