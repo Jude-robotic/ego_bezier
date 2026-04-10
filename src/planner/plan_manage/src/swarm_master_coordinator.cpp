@@ -113,9 +113,14 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
   nh_.param("swarm_master/obs_release_duration", obs_release_duration_, 0.5);
   nh_.param("swarm_master/use_fixed_obstacle_schedule", use_fixed_obstacle_schedule_, false);
   nh_.param("swarm_master/disable_online_classification", disable_online_classification_, false);
+  nh_.param("swarm_master/refresh_guidance_on_same_leader_traj",
+            refresh_guidance_on_same_leader_traj_, false);
+  nh_.param("swarm_master/fixed_obstacle_release_require_payload_clear",
+            fixed_obstacle_release_require_payload_clear_, true);
   nh_.param("swarm_master/payload/rope_length", payload_rope_length_, 1.0);
   nh_.param("swarm_master/payload/radius", payload_radius_, 0.2);
   nh_.param("swarm_master/payload/extra_margin", payload_extra_margin_, 0.05);
+  nh_.param("swarm_master/payload/template_rope_margin", payload_template_rope_margin_, 0.05);
   nh_.param("swarm_master/payload/triangle_area_min", triangle_area_min_, 0.05);
   nh_.param("swarm_master/payload/inter_uav_sep_min", inter_uav_sep_min_, 0.8);
   nh_.param("swarm_master/payload/samples_per_seg", payload_samples_per_seg_, 3);
@@ -138,6 +143,12 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
   online_payload_window_segs_ = std::max(2, online_payload_window_segs_);
   ROS_INFO("[SwarmMaster] payload online opt: enabled=%d window_segs=%d",
            static_cast<int>(online_payload_opt_enabled_), online_payload_window_segs_);
+  ROS_INFO("[SwarmMaster] same leader traj refresh: enabled=%d",
+           static_cast<int>(refresh_guidance_on_same_leader_traj_));
+  ROS_INFO("[SwarmMaster] fixed schedule release: require_payload_clear=%d",
+           static_cast<int>(fixed_obstacle_release_require_payload_clear_));
+  ROS_INFO("[SwarmMaster] payload template guard: rope_margin=%.2f",
+           payload_template_rope_margin_);
   ROS_INFO("[SwarmMaster] obs debounce: confirm_frames=%d release_duration=%.2fs",
            obs_confirm_frames_, obs_release_duration_);
   ROS_INFO("[SwarmMaster] ring detect: radius=%.1f angles=%d center_clear=%.1f surround_ratio=%.1f",
@@ -567,9 +578,66 @@ void SwarmMasterCoordinator::loadFixedObstacleSchedule()
       fixed_obstacle_schedule_ = loaded;
   }
 
+  for (auto &spec : fixed_obstacle_schedule_)
+    enforcePayloadFeasibleTemplate(spec);
+
   fixed_obstacle_runtimes_.assign(fixed_obstacle_schedule_.size(), FixedObstacleRuntime());
   current_fixed_obstacle_idx_ = 0;
   ROS_INFO("[SwarmMaster] fixed obstacle schedule loaded: %zu obstacle(s)", fixed_obstacle_schedule_.size());
+}
+
+double SwarmMasterCoordinator::computeTemplateCircumradius(const FixedObstacleSpec &spec) const
+{
+  const double back_offset = spec.mode_template.back_offset;
+  const double aux_abs_min = triangle_area_min_ / std::max(back_offset, 0.2);
+  const double aux_span = std::max(std::abs(spec.mode_template.aux_span), aux_abs_min);
+
+  const Eigen::Vector3d follower1 =
+      -back_offset * spec.forward_axis +
+      0.5 * spec.mode_template.primary_span * spec.primary_axis +
+      aux_span * spec.auxiliary_axis +
+      Eigen::Vector3d(0.0, 0.0, formation_z_offset_);
+  const Eigen::Vector3d follower2 =
+      -back_offset * spec.forward_axis -
+      0.5 * spec.mode_template.primary_span * spec.primary_axis -
+      aux_span * spec.auxiliary_axis +
+      Eigen::Vector3d(0.0, 0.0, formation_z_offset_);
+
+  const payload_geometry::CircumradiusGrad circum =
+      payload_geometry::computeCircumradiusAndGrad(Eigen::Vector3d::Zero(), follower1, follower2);
+  if (!circum.valid)
+    return std::numeric_limits<double>::infinity();
+  return circum.circumradius;
+}
+
+void SwarmMasterCoordinator::enforcePayloadFeasibleTemplate(FixedObstacleSpec &spec) const
+{
+  if (spec.type == ObstacleType::NONE)
+    return;
+
+  const double target_radius = payload_rope_length_ - payload_template_rope_margin_;
+  if (target_radius <= 1e-6)
+  {
+    ROS_WARN_THROTTLE(1.0,
+                      "[SwarmMaster] payload/template_rope_margin=%.3f is too large for rope_length=%.3f, skip template guard.",
+                      payload_template_rope_margin_, payload_rope_length_);
+    return;
+  }
+
+  const double template_radius = computeTemplateCircumradius(spec);
+  if (!std::isfinite(template_radius) || template_radius <= target_radius + 1e-6)
+    return;
+
+  const double scale = std::max(1e-3, std::min(1.0, target_radius / template_radius));
+  spec.mode_template.back_offset *= scale;
+  spec.mode_template.primary_span *= scale;
+  spec.mode_template.aux_span *= scale;
+
+  const double guarded_radius = computeTemplateCircumradius(spec);
+  ROS_WARN("[SwarmMaster] obstacle=%s template scaled by %.3f for payload feasibility "
+           "(R: %.3f -> %.3f, target<=%.3f, rope=%.3f, margin=%.3f).",
+           spec.name.c_str(), scale, template_radius, guarded_radius, target_radius,
+           payload_rope_length_, payload_template_rope_margin_);
 }
 
 Eigen::Vector3d SwarmMasterCoordinator::obstacleLocal(const int obstacle_id, const Eigen::Vector3d &world_pt) const
@@ -1291,7 +1359,8 @@ bool SwarmMasterCoordinator::optimizeOnlinePayloadWindow(
   return true;
 }
 
-void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &leader_ctrl_pts)
+void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &leader_ctrl_pts,
+                                                      const ros::Time &publish_start_time)
 {
   Eigen::MatrixXd corrected_leader_ctrl = leader_ctrl_pts;
   applyLeaderBoundaryCorrection(corrected_leader_ctrl);
@@ -1311,15 +1380,25 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
   {
     FixedObstacleSpec &spec = fixed_obstacle_schedule_[static_cast<size_t>(current_fixed_obstacle_idx_)];
     FixedObstacleRuntime &runtime = fixed_obstacle_runtimes_[static_cast<size_t>(current_fixed_obstacle_idx_)];
-    const Eigen::Vector3d leader_nominal_now = evalCurrentLeaderNominalPosition(leader_ctrl_pts);
-    const double leader_along = obstacleAlong(spec.id, leader_nominal_now);
+    // fixed schedule 的状态推进必须跟随 leader 实际执行位置，而不是名义轨迹时钟。
+    // 否则同一条 leader nominal 轨迹被持续刷新时，障碍物状态机会“按旧 start_time 快进”，
+    // 在 ring/slit 附近过早切换 ACTIVE/HOLD/RELEASE，和实际编队位置脱节后造成卡死。
+    const Eigen::Vector3d leader_world_now =
+        leader_state_.valid ? leader_state_.pos : evalCurrentLeaderNominalPosition(corrected_leader_ctrl);
+    const double leader_along = obstacleAlong(spec.id, leader_world_now);
 
     Eigen::Vector3d payload_center = Eigen::Vector3d::Zero();
-    const bool payload_valid = computePayloadPositionFromStates(payload_center);
+    bool payload_valid = computePayloadPositionFromStates(payload_center);
+    bool payload_using_cached_center = false;
     if (payload_valid)
     {
       runtime.last_valid_payload_center = payload_center;
       runtime.have_last_valid_payload = true;
+    }
+    else if (runtime.have_last_valid_payload)
+    {
+      payload_center = runtime.last_valid_payload_center;
+      payload_using_cached_center = true;
     }
 
     double min_clear_along = std::numeric_limits<double>::infinity();
@@ -1338,12 +1417,22 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
         all_followers_clear = false;
     }
 
-    bool payload_clear = false;
-    if (payload_valid)
+    bool payload_clear = true;
+    if (fixed_obstacle_release_require_payload_clear_)
     {
-      const double payload_along = obstacleAlong(spec.id, payload_center);
-      min_clear_along = std::min(min_clear_along, payload_along);
-      payload_clear = payload_along >= spec.activation_window_exit + spec.release_margin;
+      payload_clear = false;
+      if (payload_valid || payload_using_cached_center)
+      {
+        const double payload_along = obstacleAlong(spec.id, payload_center);
+        min_clear_along = std::min(min_clear_along, payload_along);
+        payload_clear = payload_along >= spec.activation_window_exit + spec.release_margin;
+      }
+      else
+      {
+        ROS_WARN_THROTTLE(1.0,
+                          "[SwarmMaster][FixedSchedule] obstacle=%s payload state invalid and no cached center, keep HOLD until followers clear or payload gate is disabled.",
+                          spec.name.c_str());
+      }
     }
 
     if (runtime.state == FixedObstacleState::IDLE &&
@@ -1398,9 +1487,9 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
       const int order = latest_leader_bezier_.order > 0 ? latest_leader_bezier_.order : 3;
       int first_cp = -1;
       int last_cp = -1;
-      for (int c = 0; c < leader_ctrl_pts.cols(); ++c)
+      for (int c = 0; c < corrected_leader_ctrl.cols(); ++c)
       {
-        const double along = obstacleAlong(spec.id, leader_ctrl_pts.col(c));
+        const double along = obstacleAlong(spec.id, corrected_leader_ctrl.col(c));
         if (along >= spec.activation_window_enter - spec.blend_in &&
             along <= spec.activation_window_exit + spec.blend_out)
         {
@@ -1411,15 +1500,15 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
       }
       if (first_cp >= 0 && last_cp >= 0)
       {
-        const int max_window_end = static_cast<int>((leader_ctrl_pts.cols() - 1) / order) - 1;
+        const int max_window_end = static_cast<int>((corrected_leader_ctrl.cols() - 1) / order) - 1;
         runtime.window_seg_begin = std::max(0, first_cp / order - spec.opt_window_margin);
         runtime.window_seg_end = std::min(max_window_end,
                                           last_cp / order + spec.opt_window_margin);
       }
 
-      buildFixedFormationCommands(leader_ctrl_pts, active_cmd, command_scale, blanket_hold, commands);
+      buildFixedFormationCommands(corrected_leader_ctrl, active_cmd, command_scale, blanket_hold, commands);
       std::vector<FormationCommand> leader_bias_cmds;
-      buildFixedFormationCommands(leader_ctrl_pts, active_cmd, command_scale, false, leader_bias_cmds);
+      buildFixedFormationCommands(corrected_leader_ctrl, active_cmd, command_scale, false, leader_bias_cmds);
       for (int c = 0; c < corrected_leader_ctrl.cols() && c < static_cast<int>(leader_bias_cmds.size()); ++c)
       {
         const FormationCommand &bias_cmd = leader_bias_cmds[static_cast<size_t>(c)];
@@ -1442,9 +1531,11 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
                                     active_cmd, runtime.window_seg_begin, runtime.window_seg_end);
       }
 
-      ROS_INFO_THROTTLE(0.5, "[SwarmMaster][FixedSchedule] obstacle=%s state=%d blend=%.2f hold=%d",
+      ROS_INFO_THROTTLE(0.5,
+                        "[SwarmMaster][FixedSchedule] obstacle=%s state=%d blend=%.2f hold=%d payload_clear=%d payload_cached=%d",
                         spec.name.c_str(), static_cast<int>(runtime.state), command_scale,
-                        static_cast<int>(blanket_hold));
+                        static_cast<int>(blanket_hold), static_cast<int>(payload_clear),
+                        static_cast<int>(payload_using_cached_center));
     }
   }
 
@@ -1455,9 +1546,8 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
   applyFollowerBoundaryCorrections(agent_ctrl_pts_map);
   applyLeaderBoundaryCorrection(corrected_leader_ctrl);
 
-  const ros::Time start_time = latest_leader_bezier_.start_time;
   const ego_planner::Bezier corrected_msg =
-      buildAgentBezierMsg(0, corrected_leader_ctrl, start_time, ++out_traj_id_);
+      buildAgentBezierMsg(0, corrected_leader_ctrl, publish_start_time, ++out_traj_id_);
   leader_corrected_pub_.publish(corrected_msg);
 
   for (const auto &kv : agent_ctrl_pts_map)
@@ -1465,7 +1555,7 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
     auto pub_it = guidance_pubs_.find(kv.first);
     if (pub_it == guidance_pubs_.end())
       continue;
-    pub_it->second.publish(buildAgentBezierMsg(kv.first, kv.second, start_time, ++out_traj_id_));
+    pub_it->second.publish(buildAgentBezierMsg(kv.first, kv.second, publish_start_time, ++out_traj_id_));
   }
 }
 
@@ -2129,13 +2219,25 @@ void SwarmMasterCoordinator::runOnce()
   if (!checkReady())
     return;
 
-  // 关键修复：只在 leader 轨迹发生变化时下发一次引导，避免高频重复发布同一轨迹
-  // 反复刷新 start_time 会导致 follower 端 t_cur 长期 < 0，表现为悬停不跟随。
+  // 默认只在 leader 轨迹发生变化时下发一次引导，避免高频重复发布同一轨迹。
+  // 但 fixed obstacle schedule 依赖 leader / follower 实际位置持续推进 HOLD/RELEASE，
+  // 因此在该模式下允许对“同一条 nominal leader 轨迹”持续刷新修正引导。
   const bool same_leader_traj =
       (latest_leader_bezier_.traj_id == last_published_leader_traj_id_) &&
       (std::fabs((latest_leader_bezier_.start_time - last_published_leader_start_time_).toSec()) < 1e-4);
-  if (same_leader_traj)
+  const bool allow_same_traj_refresh =
+      use_fixed_obstacle_schedule_ && refresh_guidance_on_same_leader_traj_;
+  if (same_leader_traj && !allow_same_traj_refresh)
     return;
+
+  // 当 fixed schedule 需要对同一条 nominal leader 轨迹持续刷新时，
+  // 控制点已经通过 boundary correction 重新锚定到当前状态。
+  // 若继续沿用旧 start_time，traj_server 会把“新轨迹”当作已执行到中后段
+  // 甚至已结束，导致 leader / follower 在障碍物附近进入悬停。
+  // 因此 same-traj refresh 时需要把输出轨迹时间戳重锚到当前时刻。
+  const ros::Time publish_start_time =
+      (same_leader_traj && allow_same_traj_refresh) ? ros::Time::now()
+                                                    : latest_leader_bezier_.start_time;
 
   Eigen::MatrixXd leader_ctrl = leaderBezierToCtrlPts(latest_leader_bezier_);
   if (leader_ctrl.cols() < 4)
@@ -2159,7 +2261,7 @@ void SwarmMasterCoordinator::runOnce()
 
   if (use_fixed_obstacle_schedule_)
   {
-    runFixedObstacleSchedule(leader_ctrl);
+    runFixedObstacleSchedule(leader_ctrl, publish_start_time);
     last_published_leader_traj_id_ = latest_leader_bezier_.traj_id;
     last_published_leader_start_time_ = latest_leader_bezier_.start_time;
     return;
@@ -2699,14 +2801,8 @@ void SwarmMasterCoordinator::runOnce()
   }
   applyLeaderBoundaryCorrection(leader_corrected_ctrl);
 
-  // 直接使用主机轨迹的原始绝对时间戳，保持主从机全局时钟同步。
-  // 移除了原先的 start_time_offset(0.08s) 人工延迟：
-  //   当主机高频重规划时(>12Hz)，该延迟会导致从机 traj_server 中
-  //   t_cur 永远 < 0，不发布任何 pos_cmd，表现为"起飞后悬停不跟随"。
-  const ros::Time start_time = latest_leader_bezier_.start_time;
-
   const ego_planner::Bezier corrected_msg =
-      buildAgentBezierMsg(0, leader_corrected_ctrl, start_time, ++out_traj_id_);
+      buildAgentBezierMsg(0, leader_corrected_ctrl, publish_start_time, ++out_traj_id_);
   leader_corrected_pub_.publish(corrected_msg);
 
   for (const auto &kv : agent_ctrl_pts_map)
@@ -2716,7 +2812,8 @@ void SwarmMasterCoordinator::runOnce()
     if (pub_it == guidance_pubs_.end())
       continue;
 
-    const ego_planner::Bezier msg = buildAgentBezierMsg(agent_id, kv.second, start_time, ++out_traj_id_);
+    const ego_planner::Bezier msg =
+        buildAgentBezierMsg(agent_id, kv.second, publish_start_time, ++out_traj_id_);
     pub_it->second.publish(msg);
   }
 

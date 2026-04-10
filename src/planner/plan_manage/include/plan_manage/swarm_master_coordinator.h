@@ -137,7 +137,8 @@ private:
    *  返回 (3 x N) 矩阵，每列为归一化的 XY 平面航向 */
   Eigen::MatrixXd computeSmoothedHeadings(const Eigen::MatrixXd &ctrl_pts) const;
   std::string formatTopic(const std::string &topic_template, int agent_id) const;
-  void runFixedObstacleSchedule(const Eigen::MatrixXd &leader_ctrl_pts);
+  void runFixedObstacleSchedule(const Eigen::MatrixXd &leader_ctrl_pts,
+                                const ros::Time &publish_start_time);
   bool optimizeFixedObstacleWindow(Eigen::MatrixXd &leader_corrected_ctrl,
                                    const Eigen::MatrixXd &leader_nominal_ctrl,
                                    std::unordered_map<int, Eigen::MatrixXd> &agent_ctrl_pts_map,
@@ -220,6 +221,9 @@ private:
     bool have_last_valid_payload{false};
     double last_release_blend{0.0};
   };
+
+  void enforcePayloadFeasibleTemplate(FixedObstacleSpec &spec) const;
+  double computeTemplateCircumradius(const FixedObstacleSpec &spec) const;
 
   ros::NodeHandle nh_;
   GridMap::Ptr grid_map_;  ///< 共享主机障碍物地图，用于从机编队轨迹碰撞检测
@@ -330,6 +334,8 @@ private:
 
   bool use_fixed_obstacle_schedule_{false};
   bool disable_online_classification_{false};
+  bool refresh_guidance_on_same_leader_traj_{false};
+  bool fixed_obstacle_release_require_payload_clear_{true};
   std::vector<FixedObstacleSpec> fixed_obstacle_schedule_;
   std::vector<FixedObstacleRuntime> fixed_obstacle_runtimes_;
   int current_fixed_obstacle_idx_{0};
@@ -337,6 +343,7 @@ private:
   double payload_rope_length_{1.0};
   double payload_radius_{0.2};
   double payload_extra_margin_{0.05};
+  double payload_template_rope_margin_{0.05};
   double triangle_area_min_{0.05};
   double inter_uav_sep_min_{0.8};
   int payload_samples_per_seg_{3};

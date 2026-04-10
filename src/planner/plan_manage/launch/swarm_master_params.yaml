@@ -6,6 +6,7 @@ swarm_master:
   leader_state_timeout: 0.2
   use_fixed_obstacle_schedule: false
   disable_online_classification: false
+  refresh_guidance_on_same_leader_traj: false
 
   agent_ids: [1, 2, 3, 4]
   state_topic_template: "/swarm/agent_{id}/state"
@@ -89,6 +90,7 @@ swarm_master:
     rope_length: 1.0
     radius: 0.2
     extra_margin: 0.05
+    template_rope_margin: 0.05
     triangle_area_min: 0.05
     inter_uav_sep_min: 0.8
     samples_per_seg: 3

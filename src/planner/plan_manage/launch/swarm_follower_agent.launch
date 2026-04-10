@@ -11,6 +11,8 @@
     <arg name="guidance_min_start_time_delay" default="0.005"/>
     <arg name="startup_hold_enabled" default="true"/>
     <arg name="startup_guidance_ready_frames" default="5"/>
+    <arg name="startup_guidance_soft_ready_frames" default="2"/>
+    <arg name="startup_guidance_soft_lock_timeout" default="0.45"/>
     <arg name="startup_bridge_duration" default="0.75"/>
     <arg name="startup_hover_timeout" default="0.40"/>
     <arg name="startup_warmup_frames" default="15"/>
@@ -18,6 +20,20 @@
     <arg name="startup_bridge_stitch_pos_margin" default="0.15"/>
     <arg name="startup_bridge_max_stitch_speed" default="0.25"/>
     <arg name="startup_bridge_use_s_curve_alpha" default="true"/>
+    <arg name="startup_anchor_pos_filter_alpha" default="0.35"/>
+    <arg name="startup_anchor_vel_filter_alpha" default="0.25"/>
+    <arg name="startup_guidance_ready_speed_tol" default="0.35"/>
+    <arg name="startup_guidance_ready_dir_tol_deg" default="18.0"/>
+    <arg name="startup_guidance_ready_max_acc" default="3.0"/>
+    <arg name="startup_guidance_ready_max_turn_deg" default="40.0"/>
+    <arg name="startup_bridge_ctrl_points" default="7"/>
+    <arg name="startup_bridge_blend_power" default="1.6"/>
+    <arg name="startup_bridge_anchor_max_speed" default="0.25"/>
+    <arg name="startup_bridge_head_max_turn_deg" default="25.0"/>
+    <arg name="startup_bridge_head_max_speed" default="0.8"/>
+    <arg name="startup_bridge_head_max_acc" default="2.0"/>
+    <arg name="startup_bridge_p2_pos_margin" default="0.18"/>
+    <arg name="state_timeout" default="0.2"/>
 
     <!-- Visualization color only.
       IMPORTANT: This does NOT change dynamics/control; follower physics stays aligned with leader. -->
@@ -85,6 +101,8 @@
           <param name="refine_window_segs"   value="5"/>
           <param name="startup_hold_enabled" value="$(arg startup_hold_enabled)"/>
           <param name="startup_guidance_ready_frames" value="$(arg startup_guidance_ready_frames)"/>
+          <param name="startup_guidance_soft_ready_frames" value="$(arg startup_guidance_soft_ready_frames)"/>
+          <param name="startup_guidance_soft_lock_timeout" value="$(arg startup_guidance_soft_lock_timeout)"/>
           <param name="startup_bridge_duration" value="$(arg startup_bridge_duration)"/>
           <param name="startup_hover_timeout" value="$(arg startup_hover_timeout)"/>
           <param name="warmup_frames" value="$(arg startup_warmup_frames)"/>
@@ -92,6 +110,19 @@
           <param name="startup_bridge_stitch_pos_margin" value="$(arg startup_bridge_stitch_pos_margin)"/>
           <param name="startup_bridge_max_stitch_speed" value="$(arg startup_bridge_max_stitch_speed)"/>
           <param name="startup_bridge_use_s_curve_alpha" value="$(arg startup_bridge_use_s_curve_alpha)"/>
+          <param name="startup_anchor_pos_filter_alpha" value="$(arg startup_anchor_pos_filter_alpha)"/>
+          <param name="startup_anchor_vel_filter_alpha" value="$(arg startup_anchor_vel_filter_alpha)"/>
+          <param name="startup_guidance_ready_speed_tol" value="$(arg startup_guidance_ready_speed_tol)"/>
+          <param name="startup_guidance_ready_dir_tol_deg" value="$(arg startup_guidance_ready_dir_tol_deg)"/>
+          <param name="startup_guidance_ready_max_acc" value="$(arg startup_guidance_ready_max_acc)"/>
+          <param name="startup_guidance_ready_max_turn_deg" value="$(arg startup_guidance_ready_max_turn_deg)"/>
+          <param name="startup_bridge_ctrl_points" value="$(arg startup_bridge_ctrl_points)"/>
+          <param name="startup_bridge_blend_power" value="$(arg startup_bridge_blend_power)"/>
+          <param name="startup_bridge_anchor_max_speed" value="$(arg startup_bridge_anchor_max_speed)"/>
+          <param name="startup_bridge_head_max_turn_deg" value="$(arg startup_bridge_head_max_turn_deg)"/>
+          <param name="startup_bridge_head_max_speed" value="$(arg startup_bridge_head_max_speed)"/>
+          <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
+          <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
 
           <param name="optimization/lambda_smooth" value="0.5"/>
           <param name="optimization/lambda_collision" value="5.0"/>
@@ -130,6 +161,8 @@
               <param name="refine_window_segs"   value="5"/>
               <param name="startup_hold_enabled" value="$(arg startup_hold_enabled)"/>
               <param name="startup_guidance_ready_frames" value="$(arg startup_guidance_ready_frames)"/>
+              <param name="startup_guidance_soft_ready_frames" value="$(arg startup_guidance_soft_ready_frames)"/>
+              <param name="startup_guidance_soft_lock_timeout" value="$(arg startup_guidance_soft_lock_timeout)"/>
               <param name="startup_bridge_duration" value="$(arg startup_bridge_duration)"/>
               <param name="startup_hover_timeout" value="$(arg startup_hover_timeout)"/>
               <param name="warmup_frames" value="$(arg startup_warmup_frames)"/>
@@ -137,6 +170,19 @@
               <param name="startup_bridge_stitch_pos_margin" value="$(arg startup_bridge_stitch_pos_margin)"/>
               <param name="startup_bridge_max_stitch_speed" value="$(arg startup_bridge_max_stitch_speed)"/>
               <param name="startup_bridge_use_s_curve_alpha" value="$(arg startup_bridge_use_s_curve_alpha)"/>
+              <param name="startup_anchor_pos_filter_alpha" value="$(arg startup_anchor_pos_filter_alpha)"/>
+              <param name="startup_anchor_vel_filter_alpha" value="$(arg startup_anchor_vel_filter_alpha)"/>
+              <param name="startup_guidance_ready_speed_tol" value="$(arg startup_guidance_ready_speed_tol)"/>
+              <param name="startup_guidance_ready_dir_tol_deg" value="$(arg startup_guidance_ready_dir_tol_deg)"/>
+              <param name="startup_guidance_ready_max_acc" value="$(arg startup_guidance_ready_max_acc)"/>
+              <param name="startup_guidance_ready_max_turn_deg" value="$(arg startup_guidance_ready_max_turn_deg)"/>
+              <param name="startup_bridge_ctrl_points" value="$(arg startup_bridge_ctrl_points)"/>
+              <param name="startup_bridge_blend_power" value="$(arg startup_bridge_blend_power)"/>
+              <param name="startup_bridge_anchor_max_speed" value="$(arg startup_bridge_anchor_max_speed)"/>
+              <param name="startup_bridge_head_max_turn_deg" value="$(arg startup_bridge_head_max_turn_deg)"/>
+              <param name="startup_bridge_head_max_speed" value="$(arg startup_bridge_head_max_speed)"/>
+              <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
+              <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
 
               <param name="optimization/lambda_smooth" value="0.5"/>
               <param name="optimization/lambda_collision" value="5.0"/>
@@ -179,6 +225,8 @@
             <param name="refine_window_segs"   value="5"/>
             <param name="startup_hold_enabled" value="$(arg startup_hold_enabled)"/>
             <param name="startup_guidance_ready_frames" value="$(arg startup_guidance_ready_frames)"/>
+            <param name="startup_guidance_soft_ready_frames" value="$(arg startup_guidance_soft_ready_frames)"/>
+            <param name="startup_guidance_soft_lock_timeout" value="$(arg startup_guidance_soft_lock_timeout)"/>
             <param name="startup_bridge_duration" value="$(arg startup_bridge_duration)"/>
             <param name="startup_hover_timeout" value="$(arg startup_hover_timeout)"/>
             <param name="warmup_frames" value="$(arg startup_warmup_frames)"/>
@@ -186,6 +234,19 @@
             <param name="startup_bridge_stitch_pos_margin" value="$(arg startup_bridge_stitch_pos_margin)"/>
             <param name="startup_bridge_max_stitch_speed" value="$(arg startup_bridge_max_stitch_speed)"/>
             <param name="startup_bridge_use_s_curve_alpha" value="$(arg startup_bridge_use_s_curve_alpha)"/>
+            <param name="startup_anchor_pos_filter_alpha" value="$(arg startup_anchor_pos_filter_alpha)"/>
+            <param name="startup_anchor_vel_filter_alpha" value="$(arg startup_anchor_vel_filter_alpha)"/>
+            <param name="startup_guidance_ready_speed_tol" value="$(arg startup_guidance_ready_speed_tol)"/>
+            <param name="startup_guidance_ready_dir_tol_deg" value="$(arg startup_guidance_ready_dir_tol_deg)"/>
+            <param name="startup_guidance_ready_max_acc" value="$(arg startup_guidance_ready_max_acc)"/>
+            <param name="startup_guidance_ready_max_turn_deg" value="$(arg startup_guidance_ready_max_turn_deg)"/>
+            <param name="startup_bridge_ctrl_points" value="$(arg startup_bridge_ctrl_points)"/>
+            <param name="startup_bridge_blend_power" value="$(arg startup_bridge_blend_power)"/>
+            <param name="startup_bridge_anchor_max_speed" value="$(arg startup_bridge_anchor_max_speed)"/>
+            <param name="startup_bridge_head_max_turn_deg" value="$(arg startup_bridge_head_max_turn_deg)"/>
+            <param name="startup_bridge_head_max_speed" value="$(arg startup_bridge_head_max_speed)"/>
+            <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
+            <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
 
             <param name="optimization/lambda_smooth" value="0.5"/>
             <param name="optimization/lambda_collision" value="5.0"/>
@@ -225,7 +286,7 @@
       <node pkg="ego_planner" type="swarm_agent_state_reporter_node" name="swarm_agent_state_reporter" output="screen">
         <param name="agent_id" value="$(arg agent_id)"/>
         <param name="publish_rate" value="30.0"/>
-        <param name="state_timeout" value="0.2"/>
+        <param name="state_timeout" value="$(arg state_timeout)"/>
         <remap from="~odom" to="odom"/>
         <remap from="~state_out" to="$(arg state_topic)"/>
       </node>

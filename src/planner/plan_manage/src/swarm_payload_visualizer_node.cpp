@@ -230,6 +230,10 @@ public:
     pnh_.param("planned_traj_width", planned_traj_width_, 0.035);
     pnh_.param("invalid_sample_size", invalid_sample_size_, 0.10);
     pnh_.param("warning_text_size", warning_text_size_, 0.24);
+    pnh_.param("show_error_envelope", show_error_envelope_, true);
+    pnh_.param("error_envelope_min_scale", error_envelope_min_scale_, 0.10);
+    pnh_.param("error_envelope_max_scale", error_envelope_max_scale_, 2.00);
+    pnh_.param("error_envelope_alpha", error_envelope_alpha_, 0.15);
 
     pnh_.param("actual_center_color_r", actual_center_color_r_, 1.0);
     pnh_.param("actual_center_color_g", actual_center_color_g_, 0.45);
@@ -644,9 +648,16 @@ private:
           (planned_center.x - actual_center.x) * (planned_center.x - actual_center.x) +
           (planned_center.y - actual_center.y) * (planned_center.y - actual_center.y) +
           (planned_center.z - actual_center.z) * (planned_center.z - actual_center.z));
-      out.markers.push_back(makeSphere(1, "payload_error_envelope", planned_center,
-                                       2.0 * std::max(0.05, err),
-                                       1.0f, 0.2f, 0.2f, 0.15f));
+      if (show_error_envelope_)
+      {
+        const double envelope_scale = std::max(
+            error_envelope_min_scale_,
+            std::min(error_envelope_max_scale_, 2.0 * err));
+        out.markers.push_back(makeSphere(1, "payload_error_envelope", planned_center,
+                                         envelope_scale,
+                                         1.0f, 0.2f, 0.2f,
+                                         static_cast<float>(error_envelope_alpha_)));
+      }
     }
 
     marker_pub_.publish(out);
@@ -684,6 +695,10 @@ private:
   double planned_traj_width_{0.035};
   double invalid_sample_size_{0.10};
   double warning_text_size_{0.24};
+  bool show_error_envelope_{true};
+  double error_envelope_min_scale_{0.10};
+  double error_envelope_max_scale_{2.00};
+  double error_envelope_alpha_{0.15};
 
   double actual_center_color_r_{1.0};
   double actual_center_color_g_{0.45};

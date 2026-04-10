@@ -17,14 +17,17 @@
     6. 姿态误差：实际 - 期望（角度差规约到 [-pi, pi]）
 
 每次运行结束后会在脚本目录下自动生成 tracking_picture 子目录，
-并保存 4 张图：
+并保存 4 张图和 2 份 CSV：
     - uav_1_line_时间戳.png
     - uav_1_angle_时间戳.png
+    - uav_1_tracking_时间戳.csv
     - uav_2_line_时间戳.png
     - uav_2_angle_时间戳.png
+    - uav_2_tracking_时间戳.csv
 """
 
 import argparse
+import csv
 import math
 import sys
 import threading
@@ -204,18 +207,32 @@ class TrackingLogger:
         self.data = {
             1: dict(
                 t=[],
+                stamp=[],
+                t_in_traj=[],
                 x_des=[], y_des=[], z_des=[],
                 x_act=[], y_act=[], z_act=[],
                 ex=[], ey=[], ez=[],
+                vx_des=[], vy_des=[], vz_des=[],
+                speed_des=[],
+                vx_act=[], vy_act=[], vz_act=[],
+                speed_act=[],
+                wx_act=[], wy_act=[], wz_act=[],
                 roll_des=[], pitch_des=[], yaw_des=[],
                 roll_act=[], pitch_act=[], yaw_act=[],
                 e_roll=[], e_pitch=[], e_yaw=[]
             ),
             2: dict(
                 t=[],
+                stamp=[],
+                t_in_traj=[],
                 x_des=[], y_des=[], z_des=[],
                 x_act=[], y_act=[], z_act=[],
                 ex=[], ey=[], ez=[],
+                vx_des=[], vy_des=[], vz_des=[],
+                speed_des=[],
+                vx_act=[], vy_act=[], vz_act=[],
+                speed_act=[],
+                wx_act=[], wy_act=[], wz_act=[],
                 roll_des=[], pitch_des=[], yaw_des=[],
                 roll_act=[], pitch_act=[], yaw_act=[],
                 e_roll=[], e_pitch=[], e_yaw=[]
@@ -227,6 +244,13 @@ class TrackingLogger:
     def guidance_cb(self, msg: BezierMsg, agent_id: int):
         with self._lock:
             self._guidance[agent_id] = msg
+
+    def snapshot_data(self):
+        with self._lock:
+            return {
+                aid: {key: list(values) for key, values in d.items()}
+                for aid, d in self.data.items()
+            }
 
     # ── 从机 odom 回调 ───────────────────────
     def follower_odom_cb(self, msg: Odometry, agent_id: int):
@@ -255,11 +279,18 @@ class TrackingLogger:
         x_act = msg.pose.pose.position.x
         y_act = msg.pose.pose.position.y
         z_act = msg.pose.pose.position.z
+        vx_act = msg.twist.twist.linear.x
+        vy_act = msg.twist.twist.linear.y
+        vz_act = msg.twist.twist.linear.z
+        wx_act = msg.twist.twist.angular.x
+        wy_act = msg.twist.twist.angular.y
+        wz_act = msg.twist.twist.angular.z
 
         # 期望姿态：由速度方向估计
         vx, vy, vz = float(vel[0]), float(vel[1]), float(vel[2])
         speed_xy = math.hypot(vx, vy)
         speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+        speed_act = math.sqrt(vx_act * vx_act + vy_act * vy_act + vz_act * vz_act)
 
         with self._lock:
             des_rpy = self._last_des_rpy[agent_id].copy()
@@ -281,6 +312,8 @@ class TrackingLogger:
         with self._lock:
             d = self.data[agent_id]
             d["t"].append(t_rel)
+            d["stamp"].append(t_abs)
+            d["t_in_traj"].append(t_in_traj)
             d["x_des"].append(des[0])
             d["y_des"].append(des[1])
             d["z_des"].append(des[2])
@@ -290,6 +323,17 @@ class TrackingLogger:
             d["ex"].append(x_act - des[0])
             d["ey"].append(y_act - des[1])
             d["ez"].append(z_act - des[2])
+            d["vx_des"].append(vx)
+            d["vy_des"].append(vy)
+            d["vz_des"].append(vz)
+            d["speed_des"].append(speed)
+            d["vx_act"].append(vx_act)
+            d["vy_act"].append(vy_act)
+            d["vz_act"].append(vz_act)
+            d["speed_act"].append(speed_act)
+            d["wx_act"].append(wx_act)
+            d["wy_act"].append(wy_act)
+            d["wz_act"].append(wz_act)
 
             d["roll_des"].append(des_rpy[0])
             d["pitch_des"].append(des_rpy[1])
@@ -300,6 +344,94 @@ class TrackingLogger:
             d["e_roll"].append(e_roll)
             d["e_pitch"].append(e_pitch)
             d["e_yaw"].append(e_yaw)
+
+
+def save_tracking_csv(agent_id: int, d: dict, csv_path: str):
+    fieldnames = [
+        "sample_idx",
+        "t_rel_s",
+        "stamp_s",
+        "t_in_traj_s",
+        "x_des_m", "y_des_m", "z_des_m",
+        "x_act_m", "y_act_m", "z_act_m",
+        "ex_m", "ey_m", "ez_m", "e_pos_norm_m",
+        "vx_des_mps", "vy_des_mps", "vz_des_mps", "speed_des_mps",
+        "vx_act_mps", "vy_act_mps", "vz_act_mps", "speed_act_mps",
+        "wx_act_radps", "wy_act_radps", "wz_act_radps",
+        "roll_des_rad", "pitch_des_rad", "yaw_des_rad",
+        "roll_act_rad", "pitch_act_rad", "yaw_act_rad",
+        "e_roll_rad", "e_pitch_rad", "e_yaw_rad", "e_ang_norm_rad",
+        "roll_des_deg", "pitch_des_deg", "yaw_des_deg",
+        "roll_act_deg", "pitch_act_deg", "yaw_act_deg",
+        "e_roll_deg", "e_pitch_deg", "e_yaw_deg", "e_ang_norm_deg",
+    ]
+
+    rows = []
+    n = len(d["t"])
+    for idx in range(n):
+        ex = float(d["ex"][idx])
+        ey = float(d["ey"][idx])
+        ez = float(d["ez"][idx])
+        e_roll = float(d["e_roll"][idx])
+        e_pitch = float(d["e_pitch"][idx])
+        e_yaw = float(d["e_yaw"][idx])
+        e_pos_norm = math.sqrt(ex * ex + ey * ey + ez * ez)
+        e_ang_norm = math.sqrt(e_roll * e_roll + e_pitch * e_pitch + e_yaw * e_yaw)
+
+        rows.append({
+            "sample_idx": idx,
+            "t_rel_s": float(d["t"][idx]),
+            "stamp_s": float(d["stamp"][idx]),
+            "t_in_traj_s": float(d["t_in_traj"][idx]),
+            "x_des_m": float(d["x_des"][idx]),
+            "y_des_m": float(d["y_des"][idx]),
+            "z_des_m": float(d["z_des"][idx]),
+            "x_act_m": float(d["x_act"][idx]),
+            "y_act_m": float(d["y_act"][idx]),
+            "z_act_m": float(d["z_act"][idx]),
+            "ex_m": ex,
+            "ey_m": ey,
+            "ez_m": ez,
+            "e_pos_norm_m": e_pos_norm,
+            "vx_des_mps": float(d["vx_des"][idx]),
+            "vy_des_mps": float(d["vy_des"][idx]),
+            "vz_des_mps": float(d["vz_des"][idx]),
+            "speed_des_mps": float(d["speed_des"][idx]),
+            "vx_act_mps": float(d["vx_act"][idx]),
+            "vy_act_mps": float(d["vy_act"][idx]),
+            "vz_act_mps": float(d["vz_act"][idx]),
+            "speed_act_mps": float(d["speed_act"][idx]),
+            "wx_act_radps": float(d["wx_act"][idx]),
+            "wy_act_radps": float(d["wy_act"][idx]),
+            "wz_act_radps": float(d["wz_act"][idx]),
+            "roll_des_rad": float(d["roll_des"][idx]),
+            "pitch_des_rad": float(d["pitch_des"][idx]),
+            "yaw_des_rad": float(d["yaw_des"][idx]),
+            "roll_act_rad": float(d["roll_act"][idx]),
+            "pitch_act_rad": float(d["pitch_act"][idx]),
+            "yaw_act_rad": float(d["yaw_act"][idx]),
+            "e_roll_rad": e_roll,
+            "e_pitch_rad": e_pitch,
+            "e_yaw_rad": e_yaw,
+            "e_ang_norm_rad": e_ang_norm,
+            "roll_des_deg": math.degrees(float(d["roll_des"][idx])),
+            "pitch_des_deg": math.degrees(float(d["pitch_des"][idx])),
+            "yaw_des_deg": math.degrees(float(d["yaw_des"][idx])),
+            "roll_act_deg": math.degrees(float(d["roll_act"][idx])),
+            "pitch_act_deg": math.degrees(float(d["pitch_act"][idx])),
+            "yaw_act_deg": math.degrees(float(d["yaw_act"][idx])),
+            "e_roll_deg": math.degrees(e_roll),
+            "e_pitch_deg": math.degrees(e_pitch),
+            "e_yaw_deg": math.degrees(e_yaw),
+            "e_ang_norm_deg": math.degrees(e_ang_norm),
+        })
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"[INFO] UAV{agent_id} 跟踪数据 CSV 已保存到: {csv_path}")
 
 
 # ──────────────────────────────────────────────
@@ -362,7 +494,7 @@ def plot_position_tracking(agent_id: int, d: dict, save_path: str, show: bool):
             act,
             color="#FFB74D",
             alpha=0.24,
-            label="包络区间(期望-实际)" if i == 0 else None,
+            label="包络区间(期望-实际)",
         )
         rmse = np.sqrt(np.mean((act - des) ** 2))
         axs[i].text(
@@ -375,9 +507,9 @@ def plot_position_tracking(agent_id: int, d: dict, save_path: str, show: bool):
         )
         axs[i].set_ylabel(f"{label} [m]")
         axs[i].grid(True, alpha=0.35)
+        axs[i].legend(loc="upper right", fontsize=8)
 
     axs[3].set_xlabel("时间 t [s]")
-    axs[0].legend(loc="upper right", fontsize=8)
     axs[3].grid(True, alpha=0.35)
 
     _save_and_optionally_show(fig, save_path, show)
@@ -423,7 +555,7 @@ def plot_attitude_tracking(agent_id: int, d: dict, save_path: str, show: bool):
             act,
             color="#FFB74D",
             alpha=0.24,
-            label="包络区间(期望-实际)" if i == 0 else None,
+            label="包络区间(期望-实际)",
         )
         rmse = np.sqrt(np.mean((act - des) ** 2))
         axs[i].text(
@@ -436,9 +568,9 @@ def plot_attitude_tracking(agent_id: int, d: dict, save_path: str, show: bool):
         )
         axs[i].set_ylabel(f"{label} [deg]")
         axs[i].grid(True, alpha=0.35)
+        axs[i].legend(loc="upper right", fontsize=8)
 
     axs[3].set_xlabel("时间 t [s]")
-    axs[0].legend(loc="upper right", fontsize=8)
     axs[3].grid(True, alpha=0.35)
 
     _save_and_optionally_show(fig, save_path, show)
@@ -503,10 +635,12 @@ def main():
     except KeyboardInterrupt:
         pass
 
+    data_snapshot = logger.snapshot_data()
+
     # ── 统计摘要 ────────────────────────────
     print("\n────────── 数据摘要 ──────────")
     for aid in [1, 2]:
-        d = logger.data[aid]
+        d = data_snapshot[aid]
         n = len(d["t"])
         if n < 2:
             print(f"  从机{aid}: 数据不足 ({n} 条)")
@@ -549,12 +683,14 @@ def main():
 
     _timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     for aid in [1, 2]:
+        csv_path = os.path.join(save_dir, f"uav_{aid}_tracking_{_timestamp}.csv")
         pos_path = os.path.join(save_dir, f"uav_{aid}_line_{_timestamp}.png")
         ang_path = os.path.join(save_dir, f"uav_{aid}_angle_{_timestamp}.png")
-        plot_position_tracking(aid, logger.data[aid], pos_path, args.show)
-        plot_attitude_tracking(aid, logger.data[aid], ang_path, args.show)
+        save_tracking_csv(aid, data_snapshot[aid], csv_path)
+        plot_position_tracking(aid, data_snapshot[aid], pos_path, args.show)
+        plot_attitude_tracking(aid, data_snapshot[aid], ang_path, args.show)
 
-    print(f"[INFO] 4张图像已输出到目录: {save_dir}")
+    print(f"[INFO] 图像和 CSV 已输出到目录: {save_dir}")
 
 
 if __name__ == "__main__":

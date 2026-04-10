@@ -93,6 +93,100 @@ $$
 
 其中 $\tilde{\lambda}_2$ 是内部碰撞权重寄存器，当前代码中初始化为 $\lambda_2$，本文按“当前实现”等同处理。
 
+### 2.1.1 完整优化问题表述
+
+仅写出各个代价项的具体公式还不足以说明“代码实际在解什么问题”。按照当前实现，优化器真正求解的是：在**分段数 $N_s$ 与每段时长 $T$ 固定**的前提下，对整条分段三阶贝塞尔轨迹的**全部控制点**做联合优化。
+
+记控制点矩阵为
+
+$$
+\mathbf{Q}=
+\begin{bmatrix}
+\mathbf{P}_0 & \mathbf{P}_1 & \cdots & \mathbf{P}_{N_c-1}
+\end{bmatrix}
+\in\mathbb{R}^{3\times N_c},
+\qquad N_c=3N_s+1,
+$$
+
+并将其按列堆叠成优化向量
+
+$$
+\mathbf{x}=\mathrm{vec}(\mathbf{Q})\in\mathbb{R}^{3N_c}.
+$$
+
+因此，当前优化变量的维数为
+
+$$
+n_{\mathrm{var}}=3N_c=3(3N_s+1).
+$$
+
+在此基础上，三种模式分别对应如下优化问题：
+
+`REBOUND` 模式：
+
+$$
+\min_{\mathbf{x}\in\mathbb{R}^{3N_c}}
+\quad
+\lambda_1 J_{\mathrm{smooth}}(\mathbf{x})
++\tilde{\lambda}_2 J_{\mathrm{dist}}(\mathbf{x})
++\lambda_3 J_{\mathrm{feas}}(\mathbf{x}).
+$$
+
+`REFINE` 模式：
+
+$$
+\min_{\mathbf{x}\in\mathbb{R}^{3N_c}}
+\quad
+\lambda_1 J_{\mathrm{smooth}}(\mathbf{x})
++\lambda_4 J_{\mathrm{fit}}(\mathbf{x})
++\lambda_3 J_{\mathrm{feas}}(\mathbf{x}).
+$$
+
+`FORMATION` 模式：
+
+$$
+\min_{\mathbf{x}\in\mathbb{R}^{3N_c}}
+\quad
+\lambda_1 J_{\mathrm{smooth}}(\mathbf{x})
++\tilde{\lambda}_2 J_{\mathrm{dist}}(\mathbf{x})
++\lambda_3 J_{\mathrm{feas}}(\mathbf{x})
++\lambda_5 J_{\mathrm{formation}}(\mathbf{x}).
+$$
+
+需要特别说明的是，当前实现中**没有把速度、加速度、避障、编队保持写成显式硬约束**
+
+$$
+g(\mathbf{x})\le 0,\qquad h(\mathbf{x})=0
+$$
+
+再交给约束优化器求解；相反，这些条件全部都以罚函数的形式并入目标函数。于是当前代码实际求解的是一个**无约束优化问题**，而不是显式约束的二次规划（QP）或一般非线性规划（NLP）标准形式。
+
+从约束/结构的角度看，可将当前实现理解为：
+
+1. **参数化结构自带的条件**：由于采用 $3N_s+1$ 个控制点来拼接 $N_s$ 段三阶贝塞尔，相邻段共享端点，所以位置 $C^0$ 连续性由参数化本身保证。
+2. **软约束形式处理的条件**：速度连续、加速度连续、障碍安全距离、地面净空、速度上限、加速度上限、参考拟合、编队保持都不是 hard constraint，而是对应的罚项。
+3. **固定而非优化的量**：分段数 $N_s$ 与每段时长 $T$ 在进入优化器前已由上游流程给定，当前 `BezierOptimizer` 不优化时间分配。
+
+进一步地，若把二次项和分段罚项统一抽象，当前问题可概括写成
+
+$$
+\min_{\mathbf{x}\in\mathbb{R}^{3N_c}}
+\quad
+\mathbf{x}^\top \mathbf{H}\mathbf{x}
++\mathbf{c}^\top\mathbf{x}
++\sum_m \phi_m(\mathbf{a}_m^\top \mathbf{x}+b_m),
+$$
+
+其中：
+
+- $\mathbf{x}^\top \mathbf{H}\mathbf{x}+\mathbf{c}^\top\mathbf{x}$ 汇总了平滑项、参考拟合项、编队保持项这类二次代价；
+- $\phi_m(\cdot)$ 汇总了避障、地面净空、速度超限、加速度超限等分段罚函数；
+- 各个 $\mathbf{a}_m^\top \mathbf{x}+b_m$ 都是控制点的仿射函数。
+
+因此，**如果只看平滑/拟合/编队项，问题是二次型；但把避障与动力学超限罚项加入后，整体就变成了分段非线性优化问题，不再是标准 QP。**
+
+当前实现采用的求解方式是：对上述目标函数显式计算梯度，然后直接使用 **L-BFGS** 在 $\mathbb{R}^{3N_c}$ 上做迭代最小化。换言之，本文前述各个“约束条件”在代码层面的真实表现形式，更准确地说是“写入总代价函数中的软约束罚项”。
+
 ### 2.2 平滑项 $J_{\mathrm{smooth}}$
 
 当前代码的平滑项由“分段 jerk 惩罚”和“段间连续性惩罚”组成。

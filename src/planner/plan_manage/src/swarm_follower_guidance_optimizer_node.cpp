@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 class SwarmFollowerGuidanceOptimizer
 {
@@ -64,12 +65,27 @@ public:
 
     nh_.param("startup_hold_enabled", startup_hold_enabled_, true);
     nh_.param("startup_guidance_ready_frames", guidance_lock_frames_, guidance_lock_frames_);
+    nh_.param("startup_guidance_soft_ready_frames", startup_guidance_soft_ready_frames_, 2);
+    nh_.param("startup_guidance_soft_lock_timeout", startup_guidance_soft_lock_timeout_, 0.45);
     nh_.param("startup_bridge_duration", startup_bridge_duration_, 0.75);
     nh_.param("startup_hover_timeout", startup_hover_timeout_, 0.40);
     nh_.param("startup_nominal_guidance_rate", startup_nominal_guidance_rate_, 20.0);
     nh_.param("startup_bridge_stitch_pos_margin", startup_bridge_stitch_pos_margin_, 0.15);
     nh_.param("startup_bridge_max_stitch_speed", startup_bridge_max_stitch_speed_, 0.25);
     nh_.param("startup_bridge_use_s_curve_alpha", startup_bridge_use_s_curve_alpha_, true);
+    nh_.param("startup_anchor_pos_filter_alpha", startup_anchor_pos_filter_alpha_, 0.35);
+    nh_.param("startup_anchor_vel_filter_alpha", startup_anchor_vel_filter_alpha_, 0.25);
+    nh_.param("startup_guidance_ready_speed_tol", startup_guidance_ready_speed_tol_, 0.35);
+    nh_.param("startup_guidance_ready_dir_tol_deg", startup_guidance_ready_dir_tol_deg_, 18.0);
+    nh_.param("startup_guidance_ready_max_acc", startup_guidance_ready_max_acc_, 3.0);
+    nh_.param("startup_guidance_ready_max_turn_deg", startup_guidance_ready_max_turn_deg_, 40.0);
+    nh_.param("startup_bridge_ctrl_points", startup_bridge_ctrl_points_, 7);
+    nh_.param("startup_bridge_blend_power", startup_bridge_blend_power_, 1.6);
+    nh_.param("startup_bridge_anchor_max_speed", startup_bridge_anchor_max_speed_, 0.25);
+    nh_.param("startup_bridge_head_max_turn_deg", startup_bridge_head_max_turn_deg_, 25.0);
+    nh_.param("startup_bridge_head_max_speed", startup_bridge_head_max_speed_, 0.8);
+    nh_.param("startup_bridge_head_max_acc", startup_bridge_head_max_acc_, 2.0);
+    nh_.param("startup_bridge_p2_pos_margin", startup_bridge_p2_pos_margin_, 0.18);
 
     if (startup_bridge_duration_ > 1e-3)
     {
@@ -81,6 +97,8 @@ public:
       hover_hold_frames_ = std::max(1, static_cast<int>(std::round(startup_hover_timeout_ *
                                                                     std::max(1.0, startup_nominal_guidance_rate_))));
     }
+    startup_bridge_ctrl_points_ = std::max(3, startup_bridge_ctrl_points_);
+    startup_guidance_soft_ready_frames_ = std::max(1, startup_guidance_soft_ready_frames_);
 
     active_warmup_frames_ = std::max(1, warmup_total_frames_);
     startup_stage_ = startup_hold_enabled_ ? StartupStage::WAIT_GUIDANCE : StartupStage::TRACK_FORMATION;
@@ -115,6 +133,15 @@ public:
     ROS_INFO("[FollowerGuidance] startup bridge guard: pos_margin=%.2f m max_stitch_speed=%.2f m/s s_curve_alpha=%d",
          startup_bridge_stitch_pos_margin_, startup_bridge_max_stitch_speed_,
          static_cast<int>(startup_bridge_use_s_curve_alpha_));
+    ROS_INFO("[FollowerGuidance] startup ready check: speed_tol=%.2f m/s dir_tol=%.1f deg max_acc=%.2f m/s^2 max_turn=%.1f deg",
+         startup_guidance_ready_speed_tol_, startup_guidance_ready_dir_tol_deg_,
+         startup_guidance_ready_max_acc_, startup_guidance_ready_max_turn_deg_);
+    ROS_INFO("[FollowerGuidance] startup soft lock: frames=%d timeout=%.2f s",
+         startup_guidance_soft_ready_frames_, startup_guidance_soft_lock_timeout_);
+    ROS_INFO("[FollowerGuidance] startup bridge shaping: ctrl_pts=%d blend_power=%.2f anchor_max_speed=%.2f m/s head_turn=%.1f deg head_speed=%.2f m/s head_acc=%.2f m/s^2 p2_margin=%.2f m",
+         startup_bridge_ctrl_points_, startup_bridge_blend_power_, startup_bridge_anchor_max_speed_,
+         startup_bridge_head_max_turn_deg_, startup_bridge_head_max_speed_,
+         startup_bridge_head_max_acc_, startup_bridge_p2_pos_margin_);
   }
 
 private:
@@ -124,6 +151,17 @@ private:
     HOVER_HOLD,
     BRIDGE_TO_FORMATION,
     TRACK_FORMATION
+  };
+
+  struct GuidanceHeadMetrics
+  {
+    Eigen::Vector3d p0{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d first_edge{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d second_edge{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d vel{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d acc{Eigen::Vector3d::Zero()};
+    double speed{0.0};
+    double turn_deg{0.0};
   };
 
   void publishHoverCommand(const ego_planner::Bezier &tmpl)
@@ -180,6 +218,61 @@ private:
     return v * (max_norm / n);
   }
 
+  static double clamp01(const double v)
+  {
+    return std::max(0.0, std::min(1.0, v));
+  }
+
+  static double smoothStep01(const double x)
+  {
+    const double u = clamp01(x);
+    return u * u * (3.0 - 2.0 * u);
+  }
+
+  static double angleBetweenDeg(const Eigen::Vector3d &a, const Eigen::Vector3d &b)
+  {
+    const double na = a.norm();
+    const double nb = b.norm();
+    if (na <= 1e-9 || nb <= 1e-9)
+      return 0.0;
+    const double cos_ang = std::max(-1.0, std::min(1.0, a.dot(b) / (na * nb)));
+    return std::acos(cos_ang) * 180.0 / M_PI;
+  }
+
+  static Eigen::Vector3d blendFilteredSample(const Eigen::Vector3d &prev,
+                                             const Eigen::Vector3d &sample,
+                                             const double alpha)
+  {
+    const double w = clamp01(alpha);
+    return (1.0 - w) * prev + w * sample;
+  }
+
+  static Eigen::Vector3d clampVecAngle(const Eigen::Vector3d &vec,
+                                       const Eigen::Vector3d &ref_dir,
+                                       const double max_angle_rad)
+  {
+    const double vec_norm = vec.norm();
+    const double ref_norm = ref_dir.norm();
+    if (vec_norm <= 1e-9 || ref_norm <= 1e-9 || max_angle_rad >= M_PI - 1e-6)
+      return vec;
+
+    const Eigen::Vector3d dir = ref_dir / ref_norm;
+    const Eigen::Vector3d unit = vec / vec_norm;
+    const double cos_ang = std::max(-1.0, std::min(1.0, unit.dot(dir)));
+    const double ang = std::acos(cos_ang);
+    if (ang <= max_angle_rad)
+      return vec;
+
+    Eigen::Vector3d perp = unit - cos_ang * dir;
+    if (perp.norm() <= 1e-9)
+      return vec_norm * dir;
+
+    perp.normalize();
+    const Eigen::Vector3d clamped_dir =
+        std::cos(max_angle_rad) * dir + std::sin(max_angle_rad) * perp;
+    return vec_norm * clamped_dir;
+  }
+
   static Eigen::Vector3d evalBezierAt(const Eigen::MatrixXd &ctrl, double ts, int order, double t)
   {
     if (order != 3 || ctrl.cols() < 4 || ts <= 1e-6)
@@ -209,7 +302,176 @@ private:
     return (1.0 - u) * p012 + u * p123;
   }
 
-  void setRefPtsFromRawGuidance(int win_start, int win_cols)
+  bool computeGuidanceHeadMetrics(const Eigen::MatrixXd &ctrl, const double ts, const int order,
+                                  GuidanceHeadMetrics &metrics) const
+  {
+    if (ctrl.cols() < 3 || order <= 0 || ts <= 1e-6)
+      return false;
+
+    metrics.p0 = ctrl.col(0);
+    metrics.first_edge = ctrl.col(1) - ctrl.col(0);
+    metrics.second_edge = ctrl.col(2) - ctrl.col(1);
+    metrics.vel = (static_cast<double>(order) / ts) * metrics.first_edge;
+    metrics.speed = metrics.vel.norm();
+    metrics.turn_deg = angleBetweenDeg(metrics.first_edge, metrics.second_edge);
+
+    if (order >= 2)
+    {
+      const double acc_scale = static_cast<double>(order * (order - 1)) / (ts * ts);
+      metrics.acc = acc_scale * (ctrl.col(2) - 2.0 * ctrl.col(1) + ctrl.col(0));
+    }
+    else
+    {
+      metrics.acc.setZero();
+    }
+
+    return true;
+  }
+
+  void updateAnchorEstimate()
+  {
+    if (!have_odom_)
+      return;
+
+    if (!have_anchor_estimate_)
+    {
+      anchor_estimate_pos_ = odom_pos_;
+      anchor_estimate_vel_ = odom_vel_;
+      have_anchor_estimate_ = true;
+      return;
+    }
+
+    anchor_estimate_pos_ = blendFilteredSample(anchor_estimate_pos_, odom_pos_, startup_anchor_pos_filter_alpha_);
+    anchor_estimate_vel_ = blendFilteredSample(anchor_estimate_vel_, odom_vel_, startup_anchor_vel_filter_alpha_);
+  }
+
+  void freezeBridgeAnchor()
+  {
+    Eigen::Vector3d anchor_pos = have_anchor_estimate_ ? anchor_estimate_pos_ : hover_ref_pos_;
+    Eigen::Vector3d anchor_vel = have_anchor_estimate_ ? anchor_estimate_vel_ : Eigen::Vector3d::Zero();
+
+    const Eigen::Vector3d delta_from_hover = anchor_pos - hover_ref_pos_;
+    const double delta_norm = delta_from_hover.norm();
+    if (startup_bridge_stitch_pos_margin_ > 1e-6 && delta_norm > startup_bridge_stitch_pos_margin_)
+    {
+      anchor_pos = hover_ref_pos_ +
+                   delta_from_hover * (startup_bridge_stitch_pos_margin_ / delta_norm);
+    }
+
+    const double max_anchor_speed =
+        (startup_bridge_anchor_max_speed_ > 1e-6)
+            ? startup_bridge_anchor_max_speed_
+            : startup_bridge_max_stitch_speed_;
+    anchor_vel = clampVecNorm(anchor_vel, max_anchor_speed);
+
+    bridge_anchor_pos_ = anchor_pos;
+    bridge_anchor_vel_ = anchor_vel;
+    bridge_anchor_frozen_ = true;
+  }
+
+  Eigen::MatrixXd buildBridgeReferenceCtrl(const int cols, const double ts, const int order,
+                                           const Eigen::Vector3d &start_pos,
+                                           const Eigen::Vector3d &start_vel) const
+  {
+    Eigen::MatrixXd ref = Eigen::MatrixXd::Zero(3, std::max(0, cols));
+    if (cols <= 0)
+      return ref;
+
+    const double cp_dt = ts / std::max(1, order);
+    for (int i = 0; i < cols; ++i)
+      ref.col(i) = start_pos + start_vel * (cp_dt * static_cast<double>(i));
+    return ref;
+  }
+
+  double bridgeBlendWeightForCtrl(const int ctrl_idx) const
+  {
+    if (startup_stage_ != StartupStage::BRIDGE_TO_FORMATION)
+      return 1.0;
+
+    if (ctrl_idx <= 1)
+      return 0.0;
+
+    if (ctrl_idx >= startup_bridge_ctrl_points_)
+      return 1.0;
+
+    const double time_blend =
+        std::pow(clamp01(current_warmup_alpha_), std::max(1.0, startup_bridge_blend_power_));
+    const int blend_span = std::max(1, startup_bridge_ctrl_points_ - 1);
+    const double ctrl_x = static_cast<double>(ctrl_idx - 1) / static_cast<double>(blend_span);
+    return clamp01(time_blend * smoothStep01(ctrl_x));
+  }
+
+  void applyBridgeHeadGuard(Eigen::MatrixXd &guide_ctrl, const Eigen::MatrixXd &anchor_ref,
+                            const double ts, const int order) const
+  {
+    if (guide_ctrl.cols() < 3)
+      return;
+
+    Eigen::Vector3d p0 = guide_ctrl.col(0);
+    Eigen::Vector3d p1 = guide_ctrl.col(1);
+    Eigen::Vector3d p2 = guide_ctrl.col(2);
+
+    if (anchor_ref.cols() >= 3 && startup_bridge_p2_pos_margin_ > 1e-6)
+    {
+      const Eigen::Vector3d p2_delta = p2 - anchor_ref.col(2);
+      p2 = anchor_ref.col(2) + clampVecNorm(p2_delta, startup_bridge_p2_pos_margin_);
+    }
+
+    Eigen::Vector3d head_ref_dir = p1 - p0;
+    if (head_ref_dir.norm() <= 1e-6 && anchor_ref.cols() >= 3)
+      head_ref_dir = anchor_ref.col(2) - anchor_ref.col(1);
+    if (head_ref_dir.norm() <= 1e-6)
+      head_ref_dir = bridge_cycle_ref_start_vel_;
+
+    Eigen::Vector3d p1_to_p2 = p2 - p1;
+    if (startup_bridge_head_max_turn_deg_ > 1e-6)
+    {
+      p1_to_p2 = clampVecAngle(p1_to_p2, head_ref_dir,
+                               startup_bridge_head_max_turn_deg_ * M_PI / 180.0);
+    }
+
+    if (startup_bridge_head_max_speed_ > 1e-6)
+    {
+      const double max_ctrl_step = (ts / std::max(1, order)) * startup_bridge_head_max_speed_;
+      p1_to_p2 = clampVecNorm(p1_to_p2, max_ctrl_step);
+    }
+
+    p2 = p1 + p1_to_p2;
+
+    if (startup_bridge_head_max_acc_ > 1e-6 && order >= 2)
+    {
+      const double acc_scale = static_cast<double>(order * (order - 1));
+      const double max_ctrl_acc = startup_bridge_head_max_acc_ * ts * ts / acc_scale;
+      const Eigen::Vector3d nominal_p2 = 2.0 * p1 - p0;
+      p2 = nominal_p2 + clampVecNorm(p2 - nominal_p2, max_ctrl_acc);
+    }
+
+    guide_ctrl.col(2) = p2;
+  }
+
+  void applyBridgeTransition(Eigen::MatrixXd &guide_ctrl, const double ts, const int order)
+  {
+    if (startup_stage_ != StartupStage::BRIDGE_TO_FORMATION ||
+        !bridge_cycle_ref_valid_ || guide_ctrl.cols() < 3)
+    {
+      return;
+    }
+
+    const int blend_cols =
+      std::min(static_cast<int>(guide_ctrl.cols()), startup_bridge_ctrl_points_);
+    Eigen::MatrixXd anchor_ref = buildBridgeReferenceCtrl(
+        blend_cols, ts, order, bridge_cycle_ref_start_pos_, bridge_cycle_ref_start_vel_);
+
+    for (int i = 2; i < blend_cols; ++i)
+    {
+      const double blend = bridgeBlendWeightForCtrl(i);
+      guide_ctrl.col(i) = (1.0 - blend) * anchor_ref.col(i) + blend * guide_ctrl.col(i);
+    }
+
+    applyBridgeHeadGuard(guide_ctrl, anchor_ref, ts, order);
+  }
+
+  void setRefPtsFromRawGuidance(int win_start, int win_cols, const double ts, const int order)
   {
     if (!optimizer_ || !have_raw_guidance_ || last_raw_guidance_ctrl_.cols() <= 0 || win_cols <= 1)
       return;
@@ -217,6 +479,12 @@ private:
     optimizer_->ref_pts_.clear();
     const int ref_count = win_cols - 1;  // 必须严格等于 win_cols - 1
     optimizer_->ref_pts_.reserve(ref_count);
+    Eigen::MatrixXd bridge_ref;
+    if (startup_stage_ == StartupStage::BRIDGE_TO_FORMATION && bridge_cycle_ref_valid_)
+    {
+      bridge_ref = buildBridgeReferenceCtrl(
+          win_start + ref_count, ts, order, bridge_cycle_ref_start_pos_, bridge_cycle_ref_start_vel_);
+    }
 
     for (int i = 0; i < ref_count; ++i)
     {
@@ -230,9 +498,18 @@ private:
       {
         formation_pt = last_raw_guidance_ctrl_.col(last_raw_guidance_ctrl_.cols() - 1);
       }
-      // 起飞过渡插值：current_warmup_alpha_ 从 0 渐变到 1，将 ref_pts 从 odom 位置渐变到编队位置
-      const Eigen::Vector3d ref_pt =
-          (1.0 - current_warmup_alpha_) * warmup_start_pos_ + current_warmup_alpha_ * formation_pt;
+      Eigen::Vector3d ref_pt;
+      if (startup_stage_ == StartupStage::BRIDGE_TO_FORMATION && bridge_cycle_ref_valid_)
+      {
+        const Eigen::Vector3d anchor_pt = bridge_ref.col(src_idx);
+        const double blend = bridgeBlendWeightForCtrl(src_idx);
+        ref_pt = (1.0 - blend) * anchor_pt + blend * formation_pt;
+      }
+      else
+      {
+        // 起飞过渡插值：current_warmup_alpha_ 从 0 渐变到 1，将 ref_pts 从 odom 位置渐变到编队位置
+        ref_pt = (1.0 - current_warmup_alpha_) * warmup_start_pos_ + current_warmup_alpha_ * formation_pt;
+      }
       optimizer_->ref_pts_.push_back(ref_pt);
     }
   }
@@ -275,56 +552,161 @@ private:
     last_raw_guidance_ctrl_ = guide_ctrl;
     have_raw_guidance_ = true;
 
+    GuidanceHeadMetrics head_metrics;
+    const bool have_head_metrics = computeGuidanceHeadMetrics(guide_ctrl, ts, order, head_metrics);
+
     if (startup_hold_enabled_ && !have_running_traj_ && startup_stage_ != StartupStage::TRACK_FORMATION)
     {
       const Eigen::Vector3d curr_p0 = guide_ctrl.col(0);
+      const ros::Time now = ros::Time::now();
       const bool start_time_ready =
-          (msg->start_time - ros::Time::now()).toSec() <= std::max(0.01, min_start_time_delay_ + 0.02);
+          (msg->start_time - now).toSec() <= std::max(0.01, min_start_time_delay_ + 0.02);
 
       if (startup_stage_ == StartupStage::WAIT_GUIDANCE && !have_odom_)
       {
         guidance_stable_frames_ = 0;
+        guidance_soft_stable_frames_ = 0;
+        have_wait_guidance_soft_ready_stamp_ = false;
         ROS_WARN_THROTTLE(1.0,
                           "[FollowerGuidance] WAIT_GUIDANCE: odom not ready, keep holding.");
         return;
       }
 
+      bool head_ready = true;
+      bool soft_ready = start_time_ready;
+      double p0_jump = 0.0;
+      double head_speed_jump = 0.0;
+      double head_dir_jump_deg = 0.0;
+
       if (!have_last_guidance_p0_)
       {
         last_guidance_p0_ = curr_p0;
         have_last_guidance_p0_ = true;
-        guidance_stable_frames_ = start_time_ready ? 1 : 0;
+        if (have_head_metrics)
+        {
+          if (startup_guidance_ready_max_acc_ > 1e-6 && head_metrics.acc.norm() > startup_guidance_ready_max_acc_)
+            head_ready = false;
+          if (startup_guidance_ready_max_turn_deg_ > 1e-6 && head_metrics.turn_deg > startup_guidance_ready_max_turn_deg_)
+            head_ready = false;
+        }
+        guidance_soft_stable_frames_ = soft_ready ? 1 : 0;
+        guidance_stable_frames_ = (soft_ready && head_ready) ? 1 : 0;
+        have_wait_guidance_soft_ready_stamp_ = soft_ready;
+        if (soft_ready)
+          wait_guidance_soft_ready_stamp_ = now;
       }
       else
       {
-        const double p0_jump = (curr_p0 - last_guidance_p0_).norm();
-        if (p0_jump <= guidance_lock_pos_tol_ && start_time_ready)
+        p0_jump = (curr_p0 - last_guidance_p0_).norm();
+        soft_ready = (p0_jump <= guidance_lock_pos_tol_) && start_time_ready;
+        if (have_head_metrics)
+        {
+          if (have_last_guidance_head_metrics_)
+          {
+            head_speed_jump = std::abs(head_metrics.speed - last_guidance_head_speed_);
+            if (head_metrics.speed > 0.05 && last_guidance_head_speed_ > 0.05)
+              head_dir_jump_deg = angleBetweenDeg(head_metrics.vel, last_guidance_head_vel_);
+          }
+
+          if (startup_guidance_ready_speed_tol_ > 1e-6 && head_speed_jump > startup_guidance_ready_speed_tol_)
+            head_ready = false;
+          if (startup_guidance_ready_dir_tol_deg_ > 1e-6 && head_dir_jump_deg > startup_guidance_ready_dir_tol_deg_)
+            head_ready = false;
+          if (startup_guidance_ready_max_acc_ > 1e-6 && head_metrics.acc.norm() > startup_guidance_ready_max_acc_)
+            head_ready = false;
+          if (startup_guidance_ready_max_turn_deg_ > 1e-6 && head_metrics.turn_deg > startup_guidance_ready_max_turn_deg_)
+            head_ready = false;
+        }
+
+        if (soft_ready)
+        {
+          if (!have_wait_guidance_soft_ready_stamp_ || guidance_soft_stable_frames_ <= 0)
+            wait_guidance_soft_ready_stamp_ = now;
+          guidance_soft_stable_frames_ = std::max(1, guidance_soft_stable_frames_ + 1);
+        }
+        else
+        {
+          guidance_soft_stable_frames_ = start_time_ready ? 1 : 0;
+          have_wait_guidance_soft_ready_stamp_ = start_time_ready;
+          if (start_time_ready)
+            wait_guidance_soft_ready_stamp_ = now;
+        }
+
+        if (soft_ready && head_ready)
           ++guidance_stable_frames_;
         else
-          guidance_stable_frames_ = start_time_ready ? 1 : 0;
+          guidance_stable_frames_ = (start_time_ready && head_ready) ? 1 : 0;
         last_guidance_p0_ = curr_p0;
+
+        ROS_INFO_THROTTLE(0.5,
+                          "[FollowerGuidance] WAIT_GUIDANCE metrics: p0_jump=%.3f m speed_jump=%.3f m/s dir_jump=%.1f deg head_acc=%.2f m/s^2 head_turn=%.1f deg soft=%d/%d strict=%d/%d",
+                          p0_jump, head_speed_jump, head_dir_jump_deg,
+                          have_head_metrics ? head_metrics.acc.norm() : 0.0,
+                          have_head_metrics ? head_metrics.turn_deg : 0.0,
+                          guidance_soft_stable_frames_, startup_guidance_soft_ready_frames_,
+                          guidance_stable_frames_, guidance_lock_frames_);
+      }
+
+      if (guidance_soft_stable_frames_ > 0)
+        have_wait_guidance_soft_ready_stamp_ = true;
+
+      if (have_head_metrics)
+      {
+        last_guidance_head_vel_ = head_metrics.vel;
+        last_guidance_head_speed_ = head_metrics.speed;
+        have_last_guidance_head_metrics_ = true;
       }
 
       if (startup_stage_ == StartupStage::WAIT_GUIDANCE)
       {
-        if (guidance_stable_frames_ < std::max(1, guidance_lock_frames_))
+        const bool strict_lock_ready =
+            guidance_stable_frames_ >= std::max(1, guidance_lock_frames_);
+        double soft_lock_elapsed = 0.0;
+        bool soft_lock_ready = false;
+        if (have_wait_guidance_soft_ready_stamp_)
+        {
+          soft_lock_elapsed = (now - wait_guidance_soft_ready_stamp_).toSec();
+          soft_lock_ready =
+              guidance_soft_stable_frames_ >= startup_guidance_soft_ready_frames_ &&
+              (startup_guidance_soft_lock_timeout_ <= 1e-3 ||
+               soft_lock_elapsed >= startup_guidance_soft_lock_timeout_);
+        }
+
+        if (!strict_lock_ready && !soft_lock_ready)
         {
           ROS_INFO_THROTTLE(0.5,
-                            "[FollowerGuidance] WAIT_GUIDANCE: stable=%d/%d, holding before bridge.",
-                            guidance_stable_frames_, guidance_lock_frames_);
+                            "[FollowerGuidance] WAIT_GUIDANCE: strict=%d/%d soft=%d/%d soft_elapsed=%.2fs, holding before bridge.",
+                            guidance_stable_frames_, guidance_lock_frames_,
+                            guidance_soft_stable_frames_, startup_guidance_soft_ready_frames_,
+                            soft_lock_elapsed);
           return;
+        }
+
+        if (!strict_lock_ready && soft_lock_ready)
+        {
+          ROS_WARN("[FollowerGuidance] WAIT_GUIDANCE soft-lock triggered after %.2fs "
+                   "(soft=%d/%d strict=%d/%d). Proceeding to bridge with head guard.",
+                   soft_lock_elapsed, guidance_soft_stable_frames_, startup_guidance_soft_ready_frames_,
+                   guidance_stable_frames_, guidance_lock_frames_);
         }
 
         startup_stage_ = StartupStage::HOVER_HOLD;
         stage_enter_stamp_ = ros::Time::now();
         hover_hold_count_ = 0;
+        guidance_stable_frames_ = 0;
+        guidance_soft_stable_frames_ = 0;
+        have_wait_guidance_soft_ready_stamp_ = false;
         hover_ref_pos_ = have_odom_ ? odom_pos_ : curr_p0;
+        have_anchor_estimate_ = false;
+        updateAnchorEstimate();
+        bridge_anchor_frozen_ = false;
         ROS_INFO("[FollowerGuidance] Guidance locked, entering HOVER_HOLD (%d frames).",
                  hover_hold_frames_);
       }
 
       if (startup_stage_ == StartupStage::HOVER_HOLD)
       {
+        updateAnchorEstimate();
         publishHoverCommand(*msg);
         ++hover_hold_count_;
         const double hold_elapsed = (ros::Time::now() - stage_enter_stamp_).toSec();
@@ -338,6 +720,7 @@ private:
           startup_stage_ = StartupStage::BRIDGE_TO_FORMATION;
           stage_enter_stamp_ = ros::Time::now();
           active_warmup_frames_ = std::max(1, bridge_frames_);
+          freezeBridgeAnchor();
           ROS_INFO("[FollowerGuidance] Entering BRIDGE_TO_FORMATION (%d frames).",
                    active_warmup_frames_);
         }
@@ -400,7 +783,13 @@ private:
     else
     {
       // 首次：使用从机当前 odom 位置/速度作为接续起点，避免硬位置跳变
-      if (have_odom_)
+      if (startup_stage_ == StartupStage::BRIDGE_TO_FORMATION && bridge_anchor_frozen_)
+      {
+        p_stitch = bridge_anchor_pos_;
+        v_stitch = bridge_anchor_vel_;
+        warmup_start_pos_ = bridge_anchor_pos_;
+      }
+      else if (have_odom_)
       {
         p_stitch = odom_pos_;
         v_stitch = odom_vel_;
@@ -462,6 +851,17 @@ private:
       }
     }
 
+    if (startup_stage_ == StartupStage::BRIDGE_TO_FORMATION)
+    {
+      bridge_cycle_ref_start_pos_ = p_stitch.head<3>();
+      bridge_cycle_ref_start_vel_ = v_stitch.head<3>();
+      bridge_cycle_ref_valid_ = true;
+    }
+    else
+    {
+      bridge_cycle_ref_valid_ = false;
+    }
+
     // -----------------------------------------------------------------------
     // 步骤 2.5：计算本帧 warmup alpha（首次 guidance 后的起飞过渡期）
     // -----------------------------------------------------------------------
@@ -473,8 +873,7 @@ private:
       if (startup_bridge_use_s_curve_alpha_ && startup_stage_ == StartupStage::BRIDGE_TO_FORMATION)
       {
         // smoothstep: alpha=3x^2-2x^3，确保桥接起止速度更平滑
-        const double x = std::max(0.0, std::min(1.0, warmup_alpha_linear));
-        current_warmup_alpha_ = x * x * (3.0 - 2.0 * x);
+        current_warmup_alpha_ = smoothStep01(warmup_alpha_linear);
       }
       else
       {
@@ -491,6 +890,7 @@ private:
         {
           startup_stage_ = StartupStage::TRACK_FORMATION;
           stage_enter_stamp_ = ros::Time::now();
+          bridge_cycle_ref_valid_ = false;
           ROS_INFO("[FollowerGuidance] BRIDGE done, entering TRACK_FORMATION.");
         }
         active_warmup_frames_ = std::max(1, warmup_total_frames_);
@@ -509,6 +909,7 @@ private:
     // -----------------------------------------------------------------------
     guide_ctrl.col(0) = p_stitch;
     guide_ctrl.col(1) = p_stitch + (ts / static_cast<double>(order)) * v_stitch;
+    applyBridgeTransition(guide_ctrl, ts, order);
 
     // -----------------------------------------------------------------------
     // 步骤 3.5：引导轨迹预检（接收时立即扫描碰撞）
@@ -549,14 +950,14 @@ private:
       if (ok)
       {
         Eigen::MatrixXd tmp = opt_window;
-        setRefPtsFromRawGuidance(0, win_cols);
+        setRefPtsFromRawGuidance(0, win_cols, ts, order);
         ok = optimizer_->BezierOptimizeTrajRefine(tmp, ts, opt_window);
       }
     }
     if (!ok)
     {
       // 无碰撞弹开或弹开失败：仅做平滑精化
-      setRefPtsFromRawGuidance(0, win_cols);
+      setRefPtsFromRawGuidance(0, win_cols, ts, order);
       ok = optimizer_->BezierOptimizeTrajRefine(window_ctrl, ts, opt_window);
     }
     if (!ok)
@@ -729,7 +1130,7 @@ private:
     {
       // Refine 优化：以 Rebound 结果为初值，将轨迹拉回引导位置
       Eigen::MatrixXd refined_window;
-      setRefPtsFromRawGuidance(win_start_col, win_cols);
+      setRefPtsFromRawGuidance(win_start_col, win_cols, ts, order);
       ok = optimizer_->BezierOptimizeTrajRefine(opt_window, ts, refined_window);
       if (ok)
         opt_window = refined_window;
@@ -823,10 +1224,12 @@ private:
 
   StartupStage startup_stage_{StartupStage::WAIT_GUIDANCE};
   int guidance_lock_frames_{5};
+  int startup_guidance_soft_ready_frames_{2};
   int hover_hold_frames_{8};
   int bridge_frames_{15};
   double guidance_lock_pos_tol_{0.25};
   int guidance_stable_frames_{0};
+  int guidance_soft_stable_frames_{0};
   int hover_hold_count_{0};
   bool have_last_guidance_p0_{false};
   Eigen::Vector3d last_guidance_p0_{Eigen::Vector3d::Zero()};
@@ -838,7 +1241,35 @@ private:
   double startup_bridge_stitch_pos_margin_{0.15};
   double startup_bridge_max_stitch_speed_{0.25};
   bool startup_bridge_use_s_curve_alpha_{true};
+  double startup_anchor_pos_filter_alpha_{0.35};
+  double startup_anchor_vel_filter_alpha_{0.25};
+  double startup_guidance_ready_speed_tol_{0.35};
+  double startup_guidance_ready_dir_tol_deg_{18.0};
+  double startup_guidance_ready_max_acc_{3.0};
+  double startup_guidance_ready_max_turn_deg_{40.0};
+  double startup_guidance_soft_lock_timeout_{0.45};
+  int startup_bridge_ctrl_points_{7};
+  double startup_bridge_blend_power_{1.6};
+  double startup_bridge_anchor_max_speed_{0.25};
+  double startup_bridge_head_max_turn_deg_{25.0};
+  double startup_bridge_head_max_speed_{0.8};
+  double startup_bridge_head_max_acc_{2.0};
+  double startup_bridge_p2_pos_margin_{0.18};
   ros::Time stage_enter_stamp_;
+  bool have_last_guidance_head_metrics_{false};
+  Eigen::Vector3d last_guidance_head_vel_{Eigen::Vector3d::Zero()};
+  double last_guidance_head_speed_{0.0};
+  bool have_anchor_estimate_{false};
+  Eigen::Vector3d anchor_estimate_pos_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d anchor_estimate_vel_{Eigen::Vector3d::Zero()};
+  bool bridge_anchor_frozen_{false};
+  Eigen::Vector3d bridge_anchor_pos_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d bridge_anchor_vel_{Eigen::Vector3d::Zero()};
+  bool bridge_cycle_ref_valid_{false};
+  Eigen::Vector3d bridge_cycle_ref_start_pos_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d bridge_cycle_ref_start_vel_{Eigen::Vector3d::Zero()};
+  bool have_wait_guidance_soft_ready_stamp_{false};
+  ros::Time wait_guidance_soft_ready_stamp_;
 
   // =========================================================================
   // 被动避障：安全检测定时器
