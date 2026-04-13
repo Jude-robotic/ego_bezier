@@ -545,14 +545,17 @@ void GenerateFixedCrossWallMap() {
   // Leader waypoints: (-18,0) → (-10,3) → (0,-4) → (10,3) → (18,0)
   // Gap center Y is set to the interpolated leader Y at each gate X.
   //
-  //   Gate 1  x=-12  gap_center_y= 1.5   (segment 1: y goes 0→3)
-  //   Gate 2  x= -2  gap_center_y=-2.5   (segment 2: y goes 3→-4)
-  //   Gate 3  x=  6  gap_center_y=-0.5   (segment 3: y goes -4→3)
-  //   Gate 4  x= 14  gap_center_y= 1.5   (segment 4: y goes 3→0)
+  // Current swarm_longhall keeps the upstream leg open:
+  //   door1 @ x=-12 is intentionally removed
+  //   active door-frame gate remains only at x=+6
+  //   ring/slit/ring are kept to trigger downstream formation changes
 
   const double gap_half      = 0.65;   // half of 1.3m gap
   const double frame_thick   = 0.40;   // wall thickness in X
   const double frame_height  = corridor_height;  // floor-to-ceiling
+  int door_frame_count = 0;
+  int ring_count = 0;
+  int slit_count = 0;
 
   // Lambda-like macro: emit one door-frame wall (two panels, one gap)
   // Because C++03/11 lambdas capturing locals work fine here:
@@ -574,10 +577,12 @@ void GenerateFixedCrossWallMap() {
     }
   };
 
-  // Gate 1 — x=-12, gap centered at y=+1.5
-  addDoorFrame(-12.0,  1.5);
-  // Gate 3 — x= +6, gap centered at y=-0.5
+  ROS_INFO("Skipped upstream door-frame gate at x=-12.0 (door1 removed for swarm_longhall).");
+  // Active gate — x= +6, gap centered at y=-0.5
   addDoorFrame(  6.0, -0.5);
+  ++door_frame_count;
+  ROS_INFO("Added door-frame gate #%d at x=%.1f, gap_center_y=%.1f, gap_width=%.1f, thickness=%.1f",
+           door_frame_count, 6.0, -0.5, 2.0 * gap_half, frame_thick);
 
   // ========== Floating Ring obstacle (toroidal, passable through center) ==========
   // 圆环中心在走廊中央，主机可从中心穿过，编队需要收拢或变换
@@ -601,18 +606,19 @@ void GenerateFixedCrossWallMap() {
           cloudMap.push_back(pt);
       }
     }
+    ++ring_count;
     ROS_INFO("Added floating ring at (%.1f, %.1f, %.1f), major_r=%.1f",
              ring_x, ring_y, ring_z, ring_major_r);
   }
 
   // ========== Z-axis narrow slit (ceiling lowered + floor raised, 1.0m vertical gap) ==========
-  // 水平方向全开放（XY 平面可自由通过），但 Z 轴只留 0.8~1.8m 的缝隙
+  // 水平方向全开放（XY 平面可自由通过），但 Z 轴只留 0.2~2.0m 的缝隙
   // 迫使编队在垂直方向压扁——与门框的 Z 轴避障策略形成对比
   {
     const double slit_x = -2.0;
     const double slit_thick = 0.4;    // X 方向厚度
-    const double slit_gap_low  = 0.6; // 缝隙下沿 Z
-    const double slit_gap_high = 2.0; // 缝隙上沿 Z
+    const double slit_gap_low  = 1.4; // 缝隙下沿 Z
+    const double slit_gap_high = 2.8; // 缝隙上沿 Z
     for (double x = slit_x - slit_thick / 2.0; x <= slit_x + slit_thick / 2.0; x += _resolution) {
       for (double y = -corridor_width / 2.0; y <= corridor_width / 2.0; y += _resolution) {
         // 底部墙体：z = 0 到 slit_gap_low
@@ -627,6 +633,7 @@ void GenerateFixedCrossWallMap() {
         }
       }
     }
+    ++slit_count;
     ROS_INFO("Added Z-axis narrow slit at x=%.1f, passable z=[%.1f, %.1f]",
              slit_x, slit_gap_low, slit_gap_high);
   }
@@ -654,6 +661,7 @@ void GenerateFixedCrossWallMap() {
           cloudMap.push_back(pt);
       }
     }
+    ++ring_count;
     ROS_INFO("Added tilted ring at (%.1f, %.1f, %.1f), major_r=%.1f, tilt=15deg",
              ring2_x, ring2_y, ring2_z, ring2_major_r);
   }
@@ -662,7 +670,8 @@ void GenerateFixedCrossWallMap() {
   cloudMap.height = 1;
   cloudMap.is_dense = true;
 
-  ROS_WARN("Finished generating corridor map (40x10x3m) with 4 door-frame gates + 2 rings + 1 Z-slit");
+  ROS_WARN("Finished generating corridor map (40x10x3m) with %d door-frame gate(s), %d ring(s), %d Z-slit(s)",
+           door_frame_count, ring_count, slit_count);
 
   kdtreeLocalMap.setInputCloud(cloudMap.makeShared());
   _map_ok = true;

@@ -155,6 +155,19 @@ namespace ego_planner
         double t;
         double t_cur = (ros::Time::now() - local_data_.start_time_).toSec();
 
+        if (local_data_.duration_ <= 1e-3)
+        {
+          ROS_WARN("[Planner] Local trajectory duration is too short, fallback to polynomial init.");
+          flag_force_polynomial = true;
+          flag_regenerate = true;
+          continue;
+        }
+
+        // Avoid sampling at/after trajectory tail. Near-tail replans should fallback to
+        // polynomial init, otherwise pseudo arc-length may be degenerate and cause OOB.
+        const double tail_margin = std::max(ts, 1e-2);
+        t_cur = std::max(0.0, std::min(t_cur, std::max(0.0, local_data_.duration_ - tail_margin)));
+
         vector<double> pseudo_arc_length;
         vector<Eigen::Vector3d> segment_point;
         pseudo_arc_length.push_back(0.0);
@@ -167,6 +180,14 @@ namespace ego_planner
           }
         }
         t -= ts;
+
+        if (segment_point.size() < 2 || pseudo_arc_length.size() < 2 || pseudo_arc_length.back() < 1e-6)
+        {
+          ROS_WARN("[Planner] Degenerate local segment for replanning, fallback to polynomial init.");
+          flag_force_polynomial = true;
+          flag_regenerate = true;
+          continue;
+        }
 
         double poly_time = (local_data_.position_traj_.evaluateT(t) - local_target_pt).norm() / pp_.max_vel_ * 2;
         if (poly_time > ts)
@@ -202,12 +223,18 @@ namespace ego_planner
           point_set.clear();
           sample_length = 0;
           id = 0;
-          while ((id <= pseudo_arc_length.size() - 2) && sample_length <= pseudo_arc_length.back())
+          while ((id + 1 < pseudo_arc_length.size()) && sample_length <= pseudo_arc_length.back())
           {
             if (sample_length >= pseudo_arc_length[id] && sample_length < pseudo_arc_length[id + 1])
             {
-              point_set.push_back((sample_length - pseudo_arc_length[id]) / (pseudo_arc_length[id + 1] - pseudo_arc_length[id]) * segment_point[id + 1] +
-                                  (pseudo_arc_length[id + 1] - sample_length) / (pseudo_arc_length[id + 1] - pseudo_arc_length[id]) * segment_point[id]);
+              const double seg_len = pseudo_arc_length[id + 1] - pseudo_arc_length[id];
+              if (seg_len < 1e-6)
+              {
+                id++;
+                continue;
+              }
+              point_set.push_back((sample_length - pseudo_arc_length[id]) / seg_len * segment_point[id + 1] +
+                                  (pseudo_arc_length[id + 1] - sample_length) / seg_len * segment_point[id]);
               sample_length += cps_dist;
             }
             else
@@ -415,6 +442,12 @@ namespace ego_planner
     double min_flight_height = map_min.z() + 0.3;  // Safety margin from ground
     
     ROS_INFO("[PlannerManager] Global traj height limits: min=%.2f, max=%.2f", min_flight_height, max_flight_height);
+
+    if (waypoints.empty())
+    {
+      ROS_WARN("[PlannerManager] Empty waypoint list received, skip waypoint global planning.");
+      return false;
+    }
     
     vector<Eigen::Vector3d> points;
     // Clamp start position height

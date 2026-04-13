@@ -67,6 +67,7 @@ public:
     nh_.param("startup_guidance_ready_frames", guidance_lock_frames_, guidance_lock_frames_);
     nh_.param("startup_guidance_soft_ready_frames", startup_guidance_soft_ready_frames_, 2);
     nh_.param("startup_guidance_soft_lock_timeout", startup_guidance_soft_lock_timeout_, 0.45);
+    nh_.param("startup_force_bridge_timeout", startup_force_bridge_timeout_, 0.0);
     nh_.param("startup_bridge_duration", startup_bridge_duration_, 0.75);
     nh_.param("startup_hover_timeout", startup_hover_timeout_, 0.40);
     nh_.param("startup_nominal_guidance_rate", startup_nominal_guidance_rate_, 20.0);
@@ -99,6 +100,7 @@ public:
     }
     startup_bridge_ctrl_points_ = std::max(3, startup_bridge_ctrl_points_);
     startup_guidance_soft_ready_frames_ = std::max(1, startup_guidance_soft_ready_frames_);
+    startup_force_bridge_timeout_ = std::max(0.0, startup_force_bridge_timeout_);
 
     active_warmup_frames_ = std::max(1, warmup_total_frames_);
     startup_stage_ = startup_hold_enabled_ ? StartupStage::WAIT_GUIDANCE : StartupStage::TRACK_FORMATION;
@@ -138,6 +140,8 @@ public:
          startup_guidance_ready_max_acc_, startup_guidance_ready_max_turn_deg_);
     ROS_INFO("[FollowerGuidance] startup soft lock: frames=%d timeout=%.2f s",
          startup_guidance_soft_ready_frames_, startup_guidance_soft_lock_timeout_);
+        ROS_INFO("[FollowerGuidance] startup force bridge timeout: %.2f s (<=0 disabled)",
+          startup_force_bridge_timeout_);
     ROS_INFO("[FollowerGuidance] startup bridge shaping: ctrl_pts=%d blend_power=%.2f anchor_max_speed=%.2f m/s head_turn=%.1f deg head_speed=%.2f m/s head_acc=%.2f m/s^2 p2_margin=%.2f m",
          startup_bridge_ctrl_points_, startup_bridge_blend_power_, startup_bridge_anchor_max_speed_,
          startup_bridge_head_max_turn_deg_, startup_bridge_head_max_speed_,
@@ -663,6 +667,8 @@ private:
             guidance_stable_frames_ >= std::max(1, guidance_lock_frames_);
         double soft_lock_elapsed = 0.0;
         bool soft_lock_ready = false;
+        double force_wait_elapsed = 0.0;
+        bool force_bridge_ready = false;
         if (have_wait_guidance_soft_ready_stamp_)
         {
           soft_lock_elapsed = (now - wait_guidance_soft_ready_stamp_).toSec();
@@ -670,15 +676,22 @@ private:
               guidance_soft_stable_frames_ >= startup_guidance_soft_ready_frames_ &&
               (startup_guidance_soft_lock_timeout_ <= 1e-3 ||
                soft_lock_elapsed >= startup_guidance_soft_lock_timeout_);
+
+          // 强制桥接超时从“首次软就绪”开始计时，
+          // 防止以节点启动时间计时导致首条 guidance 即触发超时。
+          force_wait_elapsed = soft_lock_elapsed;
+          force_bridge_ready =
+              startup_force_bridge_timeout_ > 1e-3 &&
+              force_wait_elapsed >= startup_force_bridge_timeout_;
         }
 
-        if (!strict_lock_ready && !soft_lock_ready)
+        if (!strict_lock_ready && !soft_lock_ready && !force_bridge_ready)
         {
           ROS_INFO_THROTTLE(0.5,
-                            "[FollowerGuidance] WAIT_GUIDANCE: strict=%d/%d soft=%d/%d soft_elapsed=%.2fs, holding before bridge.",
+                            "[FollowerGuidance] WAIT_GUIDANCE: strict=%d/%d soft=%d/%d soft_elapsed=%.2fs force_elapsed=%.2fs, holding before bridge.",
                             guidance_stable_frames_, guidance_lock_frames_,
                             guidance_soft_stable_frames_, startup_guidance_soft_ready_frames_,
-                            soft_lock_elapsed);
+                            soft_lock_elapsed, force_wait_elapsed);
           return;
         }
 
@@ -688,6 +701,14 @@ private:
                    "(soft=%d/%d strict=%d/%d). Proceeding to bridge with head guard.",
                    soft_lock_elapsed, guidance_soft_stable_frames_, startup_guidance_soft_ready_frames_,
                    guidance_stable_frames_, guidance_lock_frames_);
+        }
+        else if (!strict_lock_ready && !soft_lock_ready && force_bridge_ready)
+        {
+          ROS_WARN("[FollowerGuidance] WAIT_GUIDANCE force timeout %.2fs reached "
+                   "(strict=%d/%d soft=%d/%d), entering bridge with guard.",
+                   force_wait_elapsed,
+                   guidance_stable_frames_, guidance_lock_frames_,
+                   guidance_soft_stable_frames_, startup_guidance_soft_ready_frames_);
         }
 
         startup_stage_ = StartupStage::HOVER_HOLD;
@@ -1248,6 +1269,7 @@ private:
   double startup_guidance_ready_max_acc_{3.0};
   double startup_guidance_ready_max_turn_deg_{40.0};
   double startup_guidance_soft_lock_timeout_{0.45};
+  double startup_force_bridge_timeout_{0.0};
   int startup_bridge_ctrl_points_{7};
   double startup_bridge_blend_power_{1.6};
   double startup_bridge_anchor_max_speed_{0.25};

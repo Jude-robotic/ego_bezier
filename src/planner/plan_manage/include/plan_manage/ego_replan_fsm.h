@@ -86,6 +86,10 @@ namespace ego_planner
     int max_waypoint_replan_attempts_;   // 每个航点的最大重规划次数
     double waypoint_approach_time_;      // 接近航点的时间计数
     double max_waypoint_approach_time_;  // 单个航点最大允许接近时间
+    // REPLAN 起点防漂移门限：当旧轨迹预测状态与 odom 偏差过大时，
+    // 直接使用 odom 作为重规划起点，避免“虚假前冲”导致原地卡死。
+    double replan_seed_pos_err_thresh_{1.0};
+    double replan_seed_vel_err_thresh_{0.8};
     ros::Time last_waypoint_check_time_; // 上次航点检查时间
 
     /* Planning data */

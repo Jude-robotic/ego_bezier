@@ -39,6 +39,8 @@ struct CooperativePayloadOptParams
   double payload_radius{0.2};
   double payload_extra_margin{0.05};
   double triangle_area_min{0.05};
+  double rope_relax{0.0};
+  double triangle_area_relax{0.0};
   double inter_uav_sep_min{0.8};
   double payload_invalid_penalty{2000.0};
 

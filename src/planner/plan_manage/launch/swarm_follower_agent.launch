@@ -33,7 +33,9 @@
     <arg name="startup_bridge_head_max_speed" default="0.8"/>
     <arg name="startup_bridge_head_max_acc" default="2.0"/>
     <arg name="startup_bridge_p2_pos_margin" default="0.18"/>
+    <arg name="startup_force_bridge_timeout" default="0.0"/>
     <arg name="state_timeout" default="0.2"/>
+    <arg name="state_timeout_grace" default="0.0"/>
 
     <!-- Visualization color only.
       IMPORTANT: This does NOT change dynamics/control; follower physics stays aligned with leader. -->
@@ -123,6 +125,7 @@
           <param name="startup_bridge_head_max_speed" value="$(arg startup_bridge_head_max_speed)"/>
           <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
           <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
+          <param name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
 
           <param name="optimization/lambda_smooth" value="0.5"/>
           <param name="optimization/lambda_collision" value="5.0"/>
@@ -183,6 +186,7 @@
               <param name="startup_bridge_head_max_speed" value="$(arg startup_bridge_head_max_speed)"/>
               <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
               <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
+              <param name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
 
               <param name="optimization/lambda_smooth" value="0.5"/>
               <param name="optimization/lambda_collision" value="5.0"/>
@@ -247,6 +251,7 @@
             <param name="startup_bridge_head_max_speed" value="$(arg startup_bridge_head_max_speed)"/>
             <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
             <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
+            <param name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
 
             <param name="optimization/lambda_smooth" value="0.5"/>
             <param name="optimization/lambda_collision" value="5.0"/>
@@ -287,6 +292,7 @@
         <param name="agent_id" value="$(arg agent_id)"/>
         <param name="publish_rate" value="30.0"/>
         <param name="state_timeout" value="$(arg state_timeout)"/>
+        <param name="state_timeout_grace" value="$(arg state_timeout_grace)"/>
         <remap from="~odom" to="odom"/>
         <remap from="~state_out" to="$(arg state_topic)"/>
       </node>

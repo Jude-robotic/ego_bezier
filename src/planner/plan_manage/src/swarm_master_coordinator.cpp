@@ -68,6 +68,7 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
   nh_.param("swarm_master/guidance_topic_template", guidance_topic_template_,
             std::string("/swarm/agent_{id}/guidance_bezier"));
   nh_.param("swarm_master/leader_state_timeout", leader_state_timeout_, 0.2);
+  nh_.param("swarm_master/leader_state_timeout_grace", leader_state_timeout_grace_, 0.0);
 
   nh_.param("swarm_master/formation/type", formation_type_, std::string("V"));
   nh_.param("swarm_master/formation/spacing", formation_spacing_, 1.6);
@@ -82,6 +83,9 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
   nh_.param("swarm_master/penalty_iters", penalty_iters_, 3);
 
   nh_.param("swarm_master/state_timeout", state_timeout_, 0.2);
+  nh_.param("swarm_master/state_timeout_grace", state_timeout_grace_, 0.0);
+  leader_state_timeout_grace_ = std::max(0.0, leader_state_timeout_grace_);
+  state_timeout_grace_ = std::max(0.0, state_timeout_grace_);
   nh_.param("swarm_master/guidance_c0_blend_dist", guidance_c0_blend_dist_, 0.6);
   nh_.param("swarm_master/guidance_c2_blend_weight", guidance_c2_blend_weight_, 0.6);
 
@@ -117,6 +121,18 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
             refresh_guidance_on_same_leader_traj_, false);
   nh_.param("swarm_master/fixed_obstacle_release_require_payload_clear",
             fixed_obstacle_release_require_payload_clear_, true);
+  nh_.param("swarm_master/fixed_schedule_same_traj_refresh_min_interval",
+            fixed_schedule_same_traj_refresh_min_interval_, 0.0);
+  nh_.param("swarm_master/fixed_schedule_same_traj_refresh_min_blend_delta",
+            fixed_schedule_same_traj_refresh_min_blend_delta_, 0.0);
+    nh_.param("swarm_master/fixed_schedule_same_traj_force_refresh_interval",
+        fixed_schedule_same_traj_force_refresh_interval_, 0.0);
+  fixed_schedule_same_traj_refresh_min_interval_ =
+      std::max(0.0, fixed_schedule_same_traj_refresh_min_interval_);
+  fixed_schedule_same_traj_refresh_min_blend_delta_ =
+      std::max(0.0, fixed_schedule_same_traj_refresh_min_blend_delta_);
+    fixed_schedule_same_traj_force_refresh_interval_ =
+      std::max(0.0, fixed_schedule_same_traj_force_refresh_interval_);
   nh_.param("swarm_master/payload/rope_length", payload_rope_length_, 1.0);
   nh_.param("swarm_master/payload/radius", payload_radius_, 0.2);
   nh_.param("swarm_master/payload/extra_margin", payload_extra_margin_, 0.05);
@@ -147,8 +163,15 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
            static_cast<int>(refresh_guidance_on_same_leader_traj_));
   ROS_INFO("[SwarmMaster] fixed schedule release: require_payload_clear=%d",
            static_cast<int>(fixed_obstacle_release_require_payload_clear_));
+  ROS_INFO("[SwarmMaster] fixed schedule refresh gate: min_interval=%.2fs min_blend_delta=%.2f force_interval=%.2fs",
+           fixed_schedule_same_traj_refresh_min_interval_,
+           fixed_schedule_same_traj_refresh_min_blend_delta_,
+           fixed_schedule_same_traj_force_refresh_interval_);
   ROS_INFO("[SwarmMaster] payload template guard: rope_margin=%.2f",
            payload_template_rope_margin_);
+  ROS_INFO("[SwarmMaster] ready gate timeout: leader=%.2fs (+%.2fs grace), agent=%.2fs (+%.2fs grace)",
+           leader_state_timeout_, leader_state_timeout_grace_,
+           state_timeout_, state_timeout_grace_);
   ROS_INFO("[SwarmMaster] obs debounce: confirm_frames=%d release_duration=%.2fs",
            obs_confirm_frames_, obs_release_duration_);
   ROS_INFO("[SwarmMaster] ring detect: radius=%.1f angles=%d center_clear=%.1f surround_ratio=%.1f",
@@ -240,12 +263,14 @@ bool SwarmMasterCoordinator::checkReady() const
     return false;
 
   const ros::Time now = ros::Time::now();
+  const double leader_timeout = leader_state_timeout_ + leader_state_timeout_grace_;
+  const double agent_timeout = state_timeout_ + state_timeout_grace_;
   if (use_fixed_obstacle_schedule_)
   {
     if (!leader_state_.valid)
       return false;
     const double age = (now - leader_state_.stamp).toSec();
-    if (age > leader_state_timeout_)
+    if (age > leader_timeout)
       return false;
   }
 
@@ -256,7 +281,7 @@ bool SwarmMasterCoordinator::checkReady() const
       return false;
 
     const double age = (now - it->second.stamp).toSec();
-    if (age > state_timeout_)
+    if (age > agent_timeout)
       return false;
   }
 
@@ -373,29 +398,6 @@ void SwarmMasterCoordinator::buildDefaultFixedObstacleSchedule()
     fixed_obstacle_schedule_.push_back(spec);
   };
 
-  FixedObstacleSpec door1;
-  door1.name = "door1";
-  door1.type = ObstacleType::DOOR_FRAME;
-  door1.center = Eigen::Vector3d(-12.0, 1.5, 1.5);
-  door1.forward_axis = Eigen::Vector3d::UnitX();
-  door1.world_from_local = Eigen::Matrix3d::Identity();
-  door1.primary_axis = door1.world_from_local.col(2);
-  door1.auxiliary_axis = door1.world_from_local.col(1);
-  door1.physical_half_extent = 0.2;
-  door1.activation_window_enter = -0.2;
-  door1.activation_window_exit = 0.2;
-  door1.blend_in = 1.2;
-  door1.blend_out = 1.2;
-  door1.release_margin = 0.8;
-  door1.opt_window_margin = 1;
-  door1.gap_center_y = 0.0;
-  door1.gap_width = 1.3;
-  door1.thickness = 0.4;
-  door1.mode_template.back_offset = 1.05;
-  door1.mode_template.primary_span = 1.15;
-  door1.mode_template.aux_span = 0.18;
-  add_spec(door1);
-
   FixedObstacleSpec ring1;
   ring1.name = "ring1";
   ring1.type = ObstacleType::RING;
@@ -405,18 +407,18 @@ void SwarmMasterCoordinator::buildDefaultFixedObstacleSchedule()
   ring1.primary_axis = ring1.world_from_local.col(0);
   ring1.auxiliary_axis = ring1.world_from_local.col(2);
   ring1.physical_half_extent = 0.6;
-  ring1.activation_window_enter = -0.6;
+  ring1.activation_window_enter = -1.0;
   ring1.activation_window_exit = 0.6;
-  ring1.blend_in = 1.2;
+  ring1.blend_in = 2.4;
   ring1.blend_out = 1.2;
   ring1.release_margin = 0.8;
-  ring1.opt_window_margin = 1;
+  ring1.opt_window_margin = 2;
   ring1.major_r = 1.8;
   ring1.minor_r = 0.4;
   ring1.mode_template.back_offset = 1.0;
   ring1.mode_template.primary_span = 1.15;
   ring1.mode_template.aux_span = 0.28;
-  ring1.mode_template.leader_bias_local = Eigen::Vector3d(0.0, 0.0, 0.18);
+  ring1.mode_template.leader_bias_local = Eigen::Vector3d(0.0, -0.25, 0.12);
   add_spec(ring1);
 
   FixedObstacleSpec slit;
@@ -428,13 +430,13 @@ void SwarmMasterCoordinator::buildDefaultFixedObstacleSchedule()
   slit.primary_axis = slit.world_from_local.col(1);
   slit.auxiliary_axis = slit.world_from_local.col(2);
   slit.physical_half_extent = 0.2;
-  slit.activation_window_enter = -0.2;
+  slit.activation_window_enter = -0.9;
   slit.activation_window_exit = 0.2;
-  slit.blend_in = 1.2;
+  slit.blend_in = 2.2;
   slit.blend_out = 1.2;
   slit.release_margin = 0.8;
-  slit.opt_window_margin = 1;
-  slit.z_gap_low = 0.6;
+  slit.opt_window_margin = 2;
+  slit.z_gap_low = 0.2;
   slit.z_gap_high = 2.0;
   slit.thickness = 0.4;
   slit.mode_template.back_offset = 1.0;
@@ -443,10 +445,28 @@ void SwarmMasterCoordinator::buildDefaultFixedObstacleSchedule()
   slit.mode_template.leader_bias_local = Eigen::Vector3d(0.0, 0.0, 0.12);
   add_spec(slit);
 
-  FixedObstacleSpec door2 = door1;
+  FixedObstacleSpec door2;
   door2.name = "door2";
+  door2.type = ObstacleType::DOOR_FRAME;
   door2.center = Eigen::Vector3d(6.0, -0.5, 1.5);
+  door2.forward_axis = Eigen::Vector3d::UnitX();
+  door2.world_from_local = Eigen::Matrix3d::Identity();
+  door2.primary_axis = door2.world_from_local.col(2);
+  door2.auxiliary_axis = door2.world_from_local.col(1);
+  door2.physical_half_extent = 0.2;
+  door2.activation_window_enter = -1.0;
+  door2.activation_window_exit = 0.2;
+  door2.blend_in = 2.4;
+  door2.blend_out = 1.2;
+  door2.release_margin = 0.8;
+  door2.opt_window_margin = 2;
   door2.gap_center_y = 0.0;
+  door2.gap_width = 1.3;
+  door2.thickness = 0.4;
+  door2.mode_template.back_offset = 1.05;
+  door2.mode_template.primary_span = 1.15;
+  door2.mode_template.aux_span = 0.18;
+  door2.mode_template.leader_bias_local = Eigen::Vector3d(0.0, -0.05, 0.0);
   add_spec(door2);
 
   FixedObstacleSpec ring2 = ring1;
@@ -457,6 +477,8 @@ void SwarmMasterCoordinator::buildDefaultFixedObstacleSchedule()
   ring2.physical_half_extent = 0.5;
   ring2.activation_window_enter = -0.5;
   ring2.activation_window_exit = 0.5;
+  ring2.blend_in = 1.2;
+  ring2.opt_window_margin = 1;
   const double tilt = 15.0 * M_PI / 180.0;
   ring2.forward_axis = Eigen::Vector3d(std::cos(tilt), 0.0, std::sin(tilt));
   ring2.world_from_local.col(0) = ring2.forward_axis;
@@ -493,6 +515,11 @@ void SwarmMasterCoordinator::loadFixedObstacleSchedule()
       if (!v.hasMember(key) || v[key].getType() != XmlRpc::XmlRpcValue::TypeInt)
         return fallback;
       return static_cast<int>(v[key]);
+    };
+    auto read_bool = [](const XmlRpc::XmlRpcValue &v, const char *key, bool fallback) {
+      if (!v.hasMember(key) || v[key].getType() != XmlRpc::XmlRpcValue::TypeBoolean)
+        return fallback;
+      return static_cast<bool>(v[key]);
     };
     auto read_string = [](const XmlRpc::XmlRpcValue &v, const char *key, const std::string &fallback) {
       if (!v.hasMember(key) || v[key].getType() != XmlRpc::XmlRpcValue::TypeString)
@@ -571,6 +598,32 @@ void SwarmMasterCoordinator::loadFixedObstacleSchedule()
           read_double(schedule_param[i], "template_aux_span", spec.mode_template.aux_span);
       spec.mode_template.leader_bias_local =
           read_vec3(schedule_param[i], "template_leader_bias_local", spec.mode_template.leader_bias_local);
+
+      if (schedule_param[i].hasMember("leader_traction") &&
+          schedule_param[i]["leader_traction"].getType() == XmlRpc::XmlRpcValue::TypeStruct)
+      {
+        const XmlRpc::XmlRpcValue &traction = schedule_param[i]["leader_traction"];
+        spec.leader_traction.enabled =
+            read_bool(traction, "enabled", spec.leader_traction.enabled);
+        spec.leader_traction.window_enter =
+            read_double(traction, "window_enter", spec.leader_traction.window_enter);
+        spec.leader_traction.window_exit =
+            read_double(traction, "window_exit", spec.leader_traction.window_exit);
+        spec.leader_traction.blend_in =
+            read_double(traction, "blend_in", spec.leader_traction.blend_in);
+        spec.leader_traction.blend_out =
+            read_double(traction, "blend_out", spec.leader_traction.blend_out);
+        spec.leader_traction.clearance_margin =
+            read_double(traction, "clearance_margin", spec.leader_traction.clearance_margin);
+        spec.leader_traction.bias_local =
+            read_vec3(traction, "bias_local", spec.leader_traction.bias_local);
+        spec.leader_traction.debug =
+            read_bool(traction, "debug", spec.leader_traction.debug);
+      }
+      spec.leader_traction.blend_in = std::max(0.0, spec.leader_traction.blend_in);
+      spec.leader_traction.blend_out = std::max(0.0, spec.leader_traction.blend_out);
+      spec.leader_traction.clearance_margin =
+          std::max(0.0, spec.leader_traction.clearance_margin);
       loaded.push_back(spec);
     }
 
@@ -584,6 +637,27 @@ void SwarmMasterCoordinator::loadFixedObstacleSchedule()
   fixed_obstacle_runtimes_.assign(fixed_obstacle_schedule_.size(), FixedObstacleRuntime());
   current_fixed_obstacle_idx_ = 0;
   ROS_INFO("[SwarmMaster] fixed obstacle schedule loaded: %zu obstacle(s)", fixed_obstacle_schedule_.size());
+
+  if (debug_fixed_schedule_manifest_)
+  {
+    const double target_radius = payload_rope_length_ - payload_template_rope_margin_;
+    for (const auto &spec : fixed_obstacle_schedule_)
+    {
+      ROS_INFO("[SwarmMaster][ScheduleManifest] id=%d name=%s type=%s center=(%.2f, %.2f, %.2f) "
+               "window=[%.2f, %.2f] blend=[%.2f, %.2f] release=%.2f template=(back=%.2f primary=%.2f aux=%.2f) "
+               "payload_R=%.3f target<=%.3f traction=(enabled=%d enter=%.2f exit=%.2f blend_in=%.2f blend_out=%.2f margin=%.2f)",
+               spec.id, spec.name.c_str(), obstacleTypeName(spec.type).c_str(),
+               spec.center.x(), spec.center.y(), spec.center.z(),
+               spec.activation_window_enter, spec.activation_window_exit,
+               spec.blend_in, spec.blend_out, spec.release_margin,
+               spec.mode_template.back_offset, spec.mode_template.primary_span,
+               spec.mode_template.aux_span, computeTemplateCircumradius(spec), target_radius,
+               static_cast<int>(spec.leader_traction.enabled),
+               spec.leader_traction.window_enter, spec.leader_traction.window_exit,
+               spec.leader_traction.blend_in, spec.leader_traction.blend_out,
+               spec.leader_traction.clearance_margin);
+    }
+  }
 }
 
 double SwarmMasterCoordinator::computeTemplateCircumradius(const FixedObstacleSpec &spec) const
@@ -652,6 +726,63 @@ Eigen::Vector3d SwarmMasterCoordinator::obstacleLocal(const int obstacle_id, con
 double SwarmMasterCoordinator::obstacleAlong(const int obstacle_id, const Eigen::Vector3d &world_pt) const
 {
   return obstacleLocal(obstacle_id, world_pt).x();
+}
+
+Eigen::Vector3d SwarmMasterCoordinator::computeObstacleLeaderTractionTargetWorld(
+    const FixedObstacleSpec &spec,
+    const Eigen::Vector3d &reference_world) const
+{
+  Eigen::Vector3d local_target = spec.world_from_local.transpose() * (reference_world - spec.center);
+
+  switch (spec.type)
+  {
+    case ObstacleType::DOOR_FRAME:
+    {
+      const double half_gap = 0.5 * std::max(0.0, spec.gap_width);
+      local_target.y() = std::max(spec.gap_center_y - half_gap,
+                                  std::min(spec.gap_center_y + half_gap, local_target.y()));
+      local_target += spec.mode_template.leader_bias_local;
+      break;
+    }
+    case ObstacleType::Z_SLIT:
+      local_target.z() = std::max(spec.z_gap_low, std::min(spec.z_gap_high, local_target.z()));
+      local_target += spec.mode_template.leader_bias_local;
+      break;
+    case ObstacleType::RING:
+    case ObstacleType::NONE:
+    default:
+      local_target += spec.mode_template.leader_bias_local;
+      break;
+  }
+
+  return spec.center + spec.world_from_local * local_target;
+}
+
+double SwarmMasterCoordinator::computeObstacleSignedClearance(const FixedObstacleSpec &spec,
+                                                              const Eigen::Vector3d &point_world,
+                                                              double radius) const
+{
+  const double effective_radius = std::max(0.0, radius);
+  switch (spec.type)
+  {
+    case ObstacleType::DOOR_FRAME:
+      return payload_geometry::doorFrameSignedClearance(
+          payload_geometry::LocalFrame{spec.center, spec.world_from_local},
+          point_world, spec.gap_center_y, spec.gap_width, effective_radius,
+          spec.physical_half_extent);
+    case ObstacleType::Z_SLIT:
+      return payload_geometry::slitSignedClearance(
+          payload_geometry::LocalFrame{spec.center, spec.world_from_local},
+          point_world, spec.z_gap_low, spec.z_gap_high, effective_radius,
+          spec.physical_half_extent);
+    case ObstacleType::RING:
+      return payload_geometry::ringSignedClearance(
+          payload_geometry::LocalFrame{spec.center, spec.world_from_local},
+          point_world, spec.major_r, spec.minor_r, effective_radius);
+    case ObstacleType::NONE:
+    default:
+      return std::numeric_limits<double>::quiet_NaN();
+  }
 }
 
 double SwarmMasterCoordinator::getSegmentDuration() const
@@ -1038,8 +1169,10 @@ void SwarmMasterCoordinator::applyLeaderBoundaryCorrection(Eigen::MatrixXd &lead
 }
 
 void SwarmMasterCoordinator::applyFollowerBoundaryCorrections(
-    std::unordered_map<int, Eigen::MatrixXd> &agent_ctrl_pts_map) const
+    std::unordered_map<int, Eigen::MatrixXd> &agent_ctrl_pts_map,
+    bool same_traj_refresh) const
 {
+  (void)same_traj_refresh;
   const double ts_seg = getSegmentDuration();
   const int order = latest_leader_bezier_.order > 0 ? latest_leader_bezier_.order : 3;
 
@@ -1087,6 +1220,68 @@ void SwarmMasterCoordinator::applyFollowerBoundaryCorrections(
   }
 }
 
+bool SwarmMasterCoordinator::shouldPublishFixedScheduleUpdate(bool same_leader_traj,
+                                                              int obstacle_id,
+                                                              FixedObstacleState state,
+                                                              bool blanket_hold,
+                                                              double command_scale,
+                                                              double min_clear_along) const
+{
+  (void)min_clear_along;
+  if (!same_leader_traj || !refresh_guidance_on_same_leader_traj_)
+    return true;
+
+  if (!have_fixed_schedule_publish_snapshot_)
+    return true;
+
+  if (obstacle_id != last_fixed_schedule_publish_obstacle_id_ ||
+      state != last_fixed_schedule_publish_state_ ||
+      blanket_hold != last_fixed_schedule_publish_blanket_hold_)
+  {
+    return true;
+  }
+
+  const double elapsed = (ros::Time::now() - last_fixed_schedule_publish_stamp_).toSec();
+  double gate_interval = fixed_schedule_same_traj_refresh_min_interval_;
+  if (fixed_schedule_same_traj_force_refresh_interval_ > kFixedObsEps)
+  {
+    gate_interval = std::min(gate_interval, fixed_schedule_same_traj_force_refresh_interval_);
+  }
+
+  if (elapsed + kFixedObsEps < gate_interval)
+    return false;
+
+  const double blend_delta = std::abs(command_scale - last_fixed_schedule_publish_blend_);
+  if (blend_delta + kFixedObsEps >= fixed_schedule_same_traj_refresh_min_blend_delta_)
+    return true;
+
+  // 同轨迹 HOLD/RELEASE 阶段 blend 可能长时间不变。若不做心跳重发，
+  // 从机短时轨迹执行完成后会进入保持，造成“全编队卡死”的假象。
+  if (fixed_schedule_same_traj_force_refresh_interval_ > kFixedObsEps &&
+      elapsed + kFixedObsEps >= fixed_schedule_same_traj_force_refresh_interval_)
+  {
+    return true;
+  }
+
+  return false;
+}
+
+void SwarmMasterCoordinator::cacheFixedSchedulePublishSnapshot(int obstacle_id,
+                                                               FixedObstacleState state,
+                                                               bool blanket_hold,
+                                                               double command_scale,
+                                                               double min_clear_along,
+                                                               const ros::Time &stamp)
+{
+  have_fixed_schedule_publish_snapshot_ = true;
+  last_fixed_schedule_publish_obstacle_id_ = obstacle_id;
+  last_fixed_schedule_publish_state_ = state;
+  last_fixed_schedule_publish_blanket_hold_ = blanket_hold;
+  last_fixed_schedule_publish_blend_ = command_scale;
+  last_fixed_schedule_publish_min_clear_along_ = min_clear_along;
+  last_fixed_schedule_publish_stamp_ = stamp;
+}
+
 void SwarmMasterCoordinator::buildFixedFormationCommands(const Eigen::MatrixXd &leader_ctrl_pts,
                                                          const FormationCommand &active_cmd,
                                                          double release_blend,
@@ -1130,6 +1325,102 @@ void SwarmMasterCoordinator::buildFixedFormationCommands(const Eigen::MatrixXd &
     commands[static_cast<size_t>(c)].blend = spatial_blend;
     commands[static_cast<size_t>(c)].obstacle_id = active_cmd.obstacle_id;
   }
+}
+
+double SwarmMasterCoordinator::applyFixedObstacleLeaderTraction(Eigen::MatrixXd &leader_ctrl_pts,
+                                                                const FixedObstacleSpec &spec,
+                                                                double leader_along) const
+{
+  const FixedObstacleLeaderTraction &traction = spec.leader_traction;
+  if (!traction.enabled || leader_ctrl_pts.cols() <= 0)
+    return 0.0;
+
+  const double enter_start = traction.window_enter - traction.blend_in;
+  const double exit_end = traction.window_exit + traction.blend_out;
+
+  bool applied = false;
+  double max_alpha = 0.0;
+  int max_col = -1;
+  Eigen::Vector3d max_nominal_local = Eigen::Vector3d::Zero();
+  Eigen::Vector3d max_target_local = Eigen::Vector3d::Zero();
+  Eigen::Vector3d max_corrected_local = Eigen::Vector3d::Zero();
+
+  for (int c = 0; c < leader_ctrl_pts.cols(); ++c)
+  {
+    const double along = obstacleAlong(spec.id, leader_ctrl_pts.col(c));
+    double alpha = 0.0;
+    if (along >= enter_start && along < traction.window_enter)
+      alpha = blendRamp(along, enter_start, traction.window_enter);
+    else if (along >= traction.window_enter && along <= traction.window_exit)
+      alpha = 1.0;
+    else if (along > traction.window_exit && along <= exit_end)
+      alpha = 1.0 - blendRamp(along, traction.window_exit, exit_end);
+
+    if (alpha <= kFixedObsEps)
+      continue;
+
+    const Eigen::Vector3d nominal_local = obstacleLocal(spec.id, leader_ctrl_pts.col(c));
+    Eigen::Vector3d target_local = nominal_local;
+
+    switch (spec.type)
+    {
+      case ObstacleType::DOOR_FRAME:
+      {
+        const double safe_half = std::max(0.0, 0.5 * spec.gap_width - traction.clearance_margin);
+        double desired_y = spec.gap_center_y + traction.bias_local.y();
+        desired_y = std::max(spec.gap_center_y - safe_half,
+                             std::min(spec.gap_center_y + safe_half, desired_y));
+        target_local.y() = desired_y;
+        break;
+      }
+      case ObstacleType::Z_SLIT:
+      {
+        double safe_low = spec.z_gap_low + traction.clearance_margin;
+        double safe_high = spec.z_gap_high - traction.clearance_margin;
+        if (safe_high < safe_low)
+        {
+          safe_low = spec.z_gap_low;
+          safe_high = spec.z_gap_high;
+        }
+        double desired_z = 0.5 * (safe_low + safe_high) + traction.bias_local.z();
+        desired_z = std::max(safe_low, std::min(safe_high, desired_z));
+        target_local.z() = desired_z;
+        break;
+      }
+      case ObstacleType::RING:
+      case ObstacleType::NONE:
+      default:
+        continue;
+    }
+
+    const Eigen::Vector3d corrected_local =
+        nominal_local + alpha * (target_local - nominal_local);
+    leader_ctrl_pts.col(c) = spec.center + spec.world_from_local * corrected_local;
+
+    applied = true;
+    if (alpha > max_alpha)
+    {
+      max_alpha = alpha;
+      max_col = c;
+      max_nominal_local = nominal_local;
+      max_target_local = target_local;
+      max_corrected_local = corrected_local;
+    }
+  }
+
+  if (applied && (leader_traction_debug_ || traction.debug))
+  {
+    ROS_INFO_THROTTLE(
+        0.5,
+        "[SwarmMaster][LeaderTraction] obstacle=%s type=%s leader_along=%.2f max_alpha=%.2f cp=%d "
+        "nominal_local=(%.2f, %.2f, %.2f) target_local=(%.2f, %.2f, %.2f) corrected_local=(%.2f, %.2f, %.2f)",
+        spec.name.c_str(), obstacleTypeName(spec.type).c_str(), leader_along, max_alpha, max_col,
+        max_nominal_local.x(), max_nominal_local.y(), max_nominal_local.z(),
+        max_target_local.x(), max_target_local.y(), max_target_local.z(),
+        max_corrected_local.x(), max_corrected_local.y(), max_corrected_local.z());
+  }
+
+  return max_alpha;
 }
 
 bool SwarmMasterCoordinator::optimizeFixedObstacleWindow(
@@ -1359,8 +1650,9 @@ bool SwarmMasterCoordinator::optimizeOnlinePayloadWindow(
   return true;
 }
 
-void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &leader_ctrl_pts,
-                                                      const ros::Time &publish_start_time)
+bool SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &leader_ctrl_pts,
+                                                      const ros::Time &publish_start_time,
+                                                      bool same_leader_traj)
 {
   Eigen::MatrixXd corrected_leader_ctrl = leader_ctrl_pts;
   applyLeaderBoundaryCorrection(corrected_leader_ctrl);
@@ -1369,6 +1661,11 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
   FormationCommand active_cmd;
   bool blanket_hold = false;
   double command_scale = 1.0;
+  int publish_obstacle_id = -1;
+  FixedObstacleState publish_state = FixedObstacleState::IDLE;
+  bool publish_blanket_hold = false;
+  double publish_command_scale = 0.0;
+  double publish_min_clear_along = std::numeric_limits<double>::quiet_NaN();
 
   while (current_fixed_obstacle_idx_ < static_cast<int>(fixed_obstacle_runtimes_.size()) &&
          fixed_obstacle_runtimes_[static_cast<size_t>(current_fixed_obstacle_idx_)].completed)
@@ -1483,6 +1780,11 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
       blanket_hold = (runtime.state == FixedObstacleState::HOLD) ||
                      (runtime.state == FixedObstacleState::RELEASE &&
                       leader_along > spec.activation_window_exit);
+      publish_obstacle_id = spec.id;
+      publish_state = runtime.state;
+      publish_blanket_hold = blanket_hold;
+      publish_command_scale = command_scale;
+      publish_min_clear_along = min_clear_along;
 
       const int order = latest_leader_bezier_.order > 0 ? latest_leader_bezier_.order : 3;
       int first_cp = -1;
@@ -1506,6 +1808,10 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
                                           last_cp / order + spec.opt_window_margin);
       }
 
+      // Keep a traction-preserving reference for the cooperative window, but capture
+      // it before the explicit leader mode-bias is added to avoid double-counting.
+      const Eigen::MatrixXd leader_opt_reference_ctrl = corrected_leader_ctrl;
+
       buildFixedFormationCommands(corrected_leader_ctrl, active_cmd, command_scale, blanket_hold, commands);
       std::vector<FormationCommand> leader_bias_cmds;
       buildFixedFormationCommands(corrected_leader_ctrl, active_cmd, command_scale, false, leader_bias_cmds);
@@ -1527,23 +1833,38 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
           runtime.window_seg_begin >= 0 &&
           runtime.window_seg_end >= runtime.window_seg_begin)
       {
-        optimizeFixedObstacleWindow(corrected_leader_ctrl, leader_ctrl_pts, agent_ctrl_pts_map,
+        // Keep the cooperative window anchored to the traction-corrected leader geometry
+        // so it does not get pulled back to the raw nominal line inside the obstacle window.
+        optimizeFixedObstacleWindow(corrected_leader_ctrl, leader_opt_reference_ctrl, agent_ctrl_pts_map,
                                     active_cmd, runtime.window_seg_begin, runtime.window_seg_end);
       }
 
       ROS_INFO_THROTTLE(0.5,
-                        "[SwarmMaster][FixedSchedule] obstacle=%s state=%d blend=%.2f hold=%d payload_clear=%d payload_cached=%d",
+                        "[SwarmMaster][FixedSchedule] obstacle=%s state=%d blend=%.2f hold=%d "
+                        "leader_along=%.2f min_clear=%.2f payload_clear=%d payload_cached=%d",
                         spec.name.c_str(), static_cast<int>(runtime.state), command_scale,
-                        static_cast<int>(blanket_hold), static_cast<int>(payload_clear),
+                        static_cast<int>(blanket_hold), leader_along, min_clear_along,
+                        static_cast<int>(payload_clear),
                         static_cast<int>(payload_using_cached_center));
     }
+  }
+
+  if (!shouldPublishFixedScheduleUpdate(same_leader_traj, publish_obstacle_id, publish_state,
+                                        publish_blanket_hold, publish_command_scale,
+                                        publish_min_clear_along))
+  {
+    ROS_INFO_THROTTLE(0.5,
+                      "[SwarmMaster][FixedSchedule] skip same-traj republish obstacle=%d state=%d blend=%.2f min_clear=%.2f",
+                      publish_obstacle_id, static_cast<int>(publish_state), publish_command_scale,
+                      publish_min_clear_along);
+    return false;
   }
 
   if (agent_ctrl_pts_map.empty())
     generateFormationGuidance(corrected_leader_ctrl, agent_ctrl_pts_map, commands);
 
   applySwarmCollisionPenalty(agent_ctrl_pts_map);
-  applyFollowerBoundaryCorrections(agent_ctrl_pts_map);
+  applyFollowerBoundaryCorrections(agent_ctrl_pts_map, same_leader_traj);
   applyLeaderBoundaryCorrection(corrected_leader_ctrl);
 
   const ego_planner::Bezier corrected_msg =
@@ -1557,6 +1878,12 @@ void SwarmMasterCoordinator::runFixedObstacleSchedule(const Eigen::MatrixXd &lea
       continue;
     pub_it->second.publish(buildAgentBezierMsg(kv.first, kv.second, publish_start_time, ++out_traj_id_));
   }
+
+  cacheFixedSchedulePublishSnapshot(publish_obstacle_id, publish_state,
+                                    publish_blanket_hold, publish_command_scale,
+                                    publish_min_clear_along,
+                                    ros::Time::now());
+  return true;
 }
 
 std::string SwarmMasterCoordinator::formatTopic(const std::string &topic_template, int agent_id) const
@@ -2261,7 +2588,7 @@ void SwarmMasterCoordinator::runOnce()
 
   if (use_fixed_obstacle_schedule_)
   {
-    runFixedObstacleSchedule(leader_ctrl, publish_start_time);
+    runFixedObstacleSchedule(leader_ctrl, publish_start_time, same_leader_traj);
     last_published_leader_traj_id_ = latest_leader_bezier_.traj_id;
     last_published_leader_start_time_ = latest_leader_bezier_.start_time;
     return;

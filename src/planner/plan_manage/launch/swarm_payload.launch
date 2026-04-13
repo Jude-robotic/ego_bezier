@@ -1,9 +1,10 @@
 <launch>
   <!-- ======================================================
-       swarm_longhall.launch
+       swarm_payload.launch
        多无人机集群 + 长直走廊地图
        - 地图与航点来自 second_testenv.launch（40×10×3 长走廊）
        - 集群架构、动力学参数来自 swarm_multi_sim.launch
+       - 不启用障碍物识别 / 固定障碍模板，仅按 waypoint 正常飞行
        ====================================================== -->
 
   <!-- ── 地图参数 ── -->
@@ -23,9 +24,14 @@
   <arg name="leader_local_frame_enable" default="false"/>
   <arg name="leader_local_frame_auto_update" default="false"/>
   <arg name="leader_max_waypoint_replan_attempts" default="20"/>
-  <arg name="swarm_master_leader_state_timeout" default="0.35"/>
-  <arg name="swarm_master_state_timeout" default="0.35"/>
-  <arg name="swarm_agent_state_timeout" default="0.35"/>
+       <arg name="leader_replan_seed_pos_err_thresh" default="1.0"/>
+       <arg name="leader_replan_seed_vel_err_thresh" default="0.8"/>
+       <arg name="swarm_master_leader_state_timeout" default="0.45"/>
+       <arg name="swarm_master_leader_state_timeout_grace" default="0.25"/>
+       <arg name="swarm_master_state_timeout" default="0.45"/>
+       <arg name="swarm_master_state_timeout_grace" default="0.25"/>
+       <arg name="swarm_agent_state_timeout" default="0.45"/>
+       <arg name="swarm_agent_state_timeout_grace" default="0.25"/>
 
   <!-- ── Follower 传感器模式（从机不自行建图，由 swarm_master 统一查图）── -->
   <arg name="follower_use_local_map"   default="false"/>
@@ -33,28 +39,29 @@
   <arg name="follower_sim_odom_topic"  default="odom"/>
   <arg name="follower_sim_cloud_topic" default="/map_generator/global_cloud"/>
   <arg name="startup_hold_enabled" default="true"/>
-  <arg name="startup_guidance_ready_frames" default="6"/>
+  <arg name="startup_guidance_ready_frames" default="2"/>
   <arg name="startup_guidance_soft_ready_frames" default="2"/>
-  <arg name="startup_guidance_soft_lock_timeout" default="0.55"/>
+  <arg name="startup_guidance_soft_lock_timeout" default="0.35"/>
   <arg name="startup_bridge_duration" default="0.8"/>
   <arg name="startup_hover_timeout" default="0.4"/>
   <arg name="startup_warmup_frames" default="15"/>
   <arg name="startup_bridge_stitch_pos_margin" default="0.15"/>
   <arg name="startup_bridge_max_stitch_speed" default="0.25"/>
   <arg name="startup_bridge_use_s_curve_alpha" default="true"/>
-  <arg name="startup_anchor_pos_filter_alpha" default="0.30"/>
-  <arg name="startup_anchor_vel_filter_alpha" default="0.20"/>
-  <arg name="startup_guidance_ready_speed_tol" default="0.22"/>
-  <arg name="startup_guidance_ready_dir_tol_deg" default="12.0"/>
-  <arg name="startup_guidance_ready_max_acc" default="2.0"/>
-  <arg name="startup_guidance_ready_max_turn_deg" default="24.0"/>
-  <arg name="startup_bridge_ctrl_points" default="10"/>
-  <arg name="startup_bridge_blend_power" default="1.85"/>
-  <arg name="startup_bridge_anchor_max_speed" default="0.20"/>
-  <arg name="startup_bridge_head_max_turn_deg" default="16.0"/>
-  <arg name="startup_bridge_head_max_speed" default="0.65"/>
-  <arg name="startup_bridge_head_max_acc" default="1.3"/>
-  <arg name="startup_bridge_p2_pos_margin" default="0.10"/>
+  <arg name="startup_anchor_pos_filter_alpha" default="0.40"/>
+  <arg name="startup_anchor_vel_filter_alpha" default="0.28"/>
+  <arg name="startup_guidance_ready_speed_tol" default="0.30"/>
+  <arg name="startup_guidance_ready_dir_tol_deg" default="16.0"/>
+  <arg name="startup_guidance_ready_max_acc" default="2.6"/>
+  <arg name="startup_guidance_ready_max_turn_deg" default="32.0"/>
+  <arg name="startup_bridge_ctrl_points" default="7"/>
+  <arg name="startup_bridge_blend_power" default="1.45"/>
+  <arg name="startup_bridge_anchor_max_speed" default="0.28"/>
+  <arg name="startup_bridge_head_max_turn_deg" default="22.0"/>
+  <arg name="startup_bridge_head_max_speed" default="0.85"/>
+  <arg name="startup_bridge_head_max_acc" default="1.8"/>
+  <arg name="startup_bridge_p2_pos_margin" default="0.16"/>
+  <arg name="startup_force_bridge_timeout" default="0.0"/>
 
   <!-- ── Follower 1 初始位置（走廊起点 V 形编队，leader 在 -18,0,1）── -->
   <arg name="uav1_init_x" default="-19.31"/>
@@ -121,15 +128,52 @@
   <arg name="payload_viz_error_envelope_alpha" default="0.15"/>
   <arg name="payload_rope_length" default="1.0"/>
   <arg name="payload_radius" default="0.2"/>
-  <arg name="payload_extra_margin" default="0.06"/>
-  <!-- ring 固定模板的理论 circumradius 已接近 1.0m 绳长上限，额外留出模板余量，
-       让 fixed schedule 在障碍物附近优先收紧队形，而不是把可行域吃满。 -->
+  <arg name="payload_extra_margin" default="0.05"/>
+       <arg name="swarm_master_coop_payload_rope_relax" default="0.03"/>
+       <arg name="swarm_master_coop_payload_triangle_area_relax" default="0.01"/>
+         <arg name="swarm_master_coop_leader_max_lateral_dev" default="0.70"/>
+         <arg name="swarm_master_coop_leader_max_backward_dev" default="0.25"/>
+       <arg name="swarm_master_coop_leader_min_forward_speed" default="0.45"/>
+       <arg name="swarm_master_coop_leader_min_forward_speed_ratio" default="0.35"/>
+  <!-- 载荷模板仍保留与 longhall 相同的几何余量配置。 -->
   <arg name="payload_template_rope_margin" default="0.10"/>
 
   <arg name="online_payload_opt_enabled" default="false"/>
   <arg name="online_payload_window_segs" default="3"/>
   <arg name="fixed_obstacle_release_require_payload_clear" default="false"/>
   <arg name="swarm_master_refresh_on_same_leader_traj" default="true"/>
+  <!-- 保持与 longhall 相同的 guidance 刷新配置。 -->
+  <arg name="swarm_master_fixed_schedule_refresh_min_interval" default="0.35"/>
+  <arg name="swarm_master_fixed_schedule_refresh_min_blend_delta" default="0.12"/>
+  <arg name="swarm_master_fixed_schedule_refresh_min_progress_along" default="0.20"/>
+  <arg name="swarm_master_fixed_schedule_force_refresh_interval" default="0.80"/>
+  <arg name="swarm_master_fixed_schedule_idle_refresh_interval" default="0.0"/>
+  <arg name="swarm_master_debug_same_traj_refresh" default="false"/>
+  <arg name="swarm_master_debug_fixed_schedule_manifest" default="false"/>
+  <arg name="leader_traction_debug" default="false"/>
+  <arg name="swarm_master_debug_ready_gate" default="false"/>
+  <arg name="swarm_master_allow_idle_publish_without_agent_ready" default="true"/>
+  <arg name="swarm_master_guidance_same_traj_c0_max_step" default="0.20"/>
+
+  <!-- ── 运行时编队切换（Program A：近似一字形；Program B：紧凑 V 形）── -->
+  <arg name="formation_mode_topic" default="/swarm/formation_mode"/>
+  <arg name="swarm_master_guidance_topic_template" default="/swarm/master/agent_{id}/guidance_bezier"/>
+  <arg name="program_a_guidance_topic_template" default="/swarm/program_a/agent_{id}/guidance_bezier"/>
+  <arg name="program_a_line_spacing" default="1.0"/>
+  <arg name="program_a_transition_duration" default="2.4"/>
+  <arg name="program_a_agent2_phase_delay" default="0.35"/>
+  <arg name="program_a_same_traj_start_delay" default="0.03"/>
+  <arg name="program_a_refresh_min_interval" default="0.20"/>
+  <arg name="program_a_refresh_min_alpha_delta" default="0.08"/>
+  <arg name="program_a_publish_rate" default="10.0"/>
+  <arg name="program_b_guidance_topic_template" default="/swarm/program_b/agent_{id}/guidance_bezier"/>
+  <arg name="program_b_compact_spacing" default="-1.0"/>
+  <arg name="program_b_min_pair_distance" default="-1.0"/>
+  <arg name="program_b_transition_duration" default="2.4"/>
+  <arg name="program_b_same_traj_start_delay" default="0.03"/>
+  <arg name="program_b_refresh_min_interval" default="0.20"/>
+  <arg name="program_b_refresh_min_alpha_delta" default="0.08"/>
+  <arg name="program_b_publish_rate" default="10.0"/>
 
   <!-- ── 飞前检查（仿真默认关闭硬阻断）── -->
   <arg name="enable_preflight_check" default="false"/>
@@ -171,13 +215,13 @@
     <arg name="point_num" value="4"/>
 
     <!-- Waypoint 1: quarter way through corridor -->
-    <arg name="point0_x" value="-10.0" />
+    <arg name="point0_x" value="-12.0" />
     <arg name="point0_y" value="3.0" />
     <arg name="point0_z" value="1.5" />
 
     <!-- Waypoint 2: middle of corridor -->
-    <arg name="point1_x" value="0.0" />
-    <arg name="point1_y" value="-4.0" />
+    <arg name="point1_x" value="2.0" />
+    <arg name="point1_y" value="-3.5" />
     <arg name="point1_z" value="0.8" />
 
     <!-- Waypoint 3: three-quarter way through corridor -->
@@ -193,7 +237,10 @@
 
   <param name="/ego_planner_node/fsm/max_waypoint_replan_attempts"
          value="$(arg leader_max_waypoint_replan_attempts)"/>
-
+  <param name="/ego_planner_node/fsm/replan_seed_pos_err_thresh"
+         value="$(arg leader_replan_seed_pos_err_thresh)"/>
+  <param name="/ego_planner_node/fsm/replan_seed_vel_err_thresh"
+         value="$(arg leader_replan_seed_vel_err_thresh)"/>
   <!-- 轨迹跟踪服务器 -->
   <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
     <param name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
@@ -244,9 +291,11 @@
        ============================================================ -->
   <rosparam file="$(find ego_planner)/launch/swarm_master_params.yaml"
             command="load" ns="swarm_master_node"/>
-  <rosparam file="$(find ego_planner)/launch/swarm_longhall_fixed_schedule.yaml"
-            command="load" ns="swarm_master_node"/>
   <rosparam param="/swarm_master_node/swarm_master/agent_ids">[1, 2]</rosparam>
+  <param name="/swarm_master_node/swarm_master/use_fixed_obstacle_schedule"
+         value="false" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/disable_online_classification"
+         value="true" type="bool"/>
   <param name="/swarm_master_node/swarm_master/online_payload_opt_enabled"
          value="$(arg online_payload_opt_enabled)" type="bool"/>
   <param name="/swarm_master_node/swarm_master/online_payload_window_segs"
@@ -255,12 +304,54 @@
          value="$(arg fixed_obstacle_release_require_payload_clear)" type="bool"/>
   <param name="/swarm_master_node/swarm_master/refresh_guidance_on_same_leader_traj"
          value="$(arg swarm_master_refresh_on_same_leader_traj)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/fixed_schedule_same_traj_refresh_min_interval"
+         value="$(arg swarm_master_fixed_schedule_refresh_min_interval)"/>
+  <param name="/swarm_master_node/swarm_master/fixed_schedule_same_traj_refresh_min_blend_delta"
+         value="$(arg swarm_master_fixed_schedule_refresh_min_blend_delta)"/>
+  <param name="/swarm_master_node/swarm_master/fixed_schedule_same_traj_refresh_min_progress_along"
+         value="$(arg swarm_master_fixed_schedule_refresh_min_progress_along)"/>
+  <param name="/swarm_master_node/swarm_master/fixed_schedule_same_traj_force_refresh_interval"
+         value="$(arg swarm_master_fixed_schedule_force_refresh_interval)"/>
+  <param name="/swarm_master_node/swarm_master/fixed_schedule_idle_same_traj_refresh_interval"
+         value="$(arg swarm_master_fixed_schedule_idle_refresh_interval)"/>
+  <param name="/swarm_master_node/swarm_master/debug_same_traj_refresh"
+         value="$(arg swarm_master_debug_same_traj_refresh)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/debug_fixed_schedule_manifest"
+         value="$(arg swarm_master_debug_fixed_schedule_manifest)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/leader_traction_debug"
+         value="$(arg leader_traction_debug)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/debug_ready_gate"
+         value="$(arg swarm_master_debug_ready_gate)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/allow_idle_publish_without_agent_ready"
+         value="$(arg swarm_master_allow_idle_publish_without_agent_ready)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/guidance_same_traj_c0_max_step"
+         value="$(arg swarm_master_guidance_same_traj_c0_max_step)"/>
   <param name="/swarm_master_node/swarm_master/payload/template_rope_margin"
          value="$(arg payload_template_rope_margin)"/>
+  <param name="/swarm_master_node/swarm_master/payload/extra_margin"
+         value="$(arg payload_extra_margin)"/>
+  <param name="/swarm_master_node/swarm_master/cooperative_opt/payload_rope_relax"
+         value="$(arg swarm_master_coop_payload_rope_relax)"/>
+  <param name="/swarm_master_node/swarm_master/cooperative_opt/payload_triangle_area_relax"
+         value="$(arg swarm_master_coop_payload_triangle_area_relax)"/>
+  <param name="/swarm_master_node/swarm_master/cooperative_opt/leader_max_lateral_dev"
+         value="$(arg swarm_master_coop_leader_max_lateral_dev)"/>
+  <param name="/swarm_master_node/swarm_master/cooperative_opt/leader_max_backward_dev"
+         value="$(arg swarm_master_coop_leader_max_backward_dev)"/>
+  <param name="/swarm_master_node/swarm_master/cooperative_opt/leader_min_forward_speed"
+         value="$(arg swarm_master_coop_leader_min_forward_speed)"/>
+  <param name="/swarm_master_node/swarm_master/cooperative_opt/leader_min_forward_speed_ratio"
+         value="$(arg swarm_master_coop_leader_min_forward_speed_ratio)"/>
   <param name="/swarm_master_node/swarm_master/leader_state_timeout"
          value="$(arg swarm_master_leader_state_timeout)"/>
+  <param name="/swarm_master_node/swarm_master/leader_state_timeout_grace"
+         value="$(arg swarm_master_leader_state_timeout_grace)"/>
   <param name="/swarm_master_node/swarm_master/state_timeout"
          value="$(arg swarm_master_state_timeout)"/>
+  <param name="/swarm_master_node/swarm_master/state_timeout_grace"
+         value="$(arg swarm_master_state_timeout_grace)"/>
+  <param name="/swarm_master_node/swarm_master/guidance_topic_template"
+         value="$(arg swarm_master_guidance_topic_template)"/>
   <param name="/swarm_master_node/swarm_master/leader_bezier_topic"
          value="/planning/bezier"/>
   <param name="/swarm_master_node/swarm_master/leader_corrected_topic"
@@ -274,6 +365,10 @@
 
   <node pkg="ego_planner" type="swarm_master_node"
         name="swarm_master_node" output="screen">
+    <param name="swarm_master/use_fixed_obstacle_schedule"
+           value="false" type="bool"/>
+    <param name="swarm_master/disable_online_classification"
+           value="true" type="bool"/>
     <param name="swarm_master/online_payload_opt_enabled"
            value="$(arg online_payload_opt_enabled)" type="bool"/>
     <param name="swarm_master/online_payload_window_segs"
@@ -282,15 +377,117 @@
            value="$(arg fixed_obstacle_release_require_payload_clear)" type="bool"/>
     <param name="swarm_master/refresh_guidance_on_same_leader_traj"
            value="$(arg swarm_master_refresh_on_same_leader_traj)" type="bool"/>
+    <param name="swarm_master/fixed_schedule_same_traj_refresh_min_interval"
+           value="$(arg swarm_master_fixed_schedule_refresh_min_interval)"/>
+    <param name="swarm_master/fixed_schedule_same_traj_refresh_min_blend_delta"
+           value="$(arg swarm_master_fixed_schedule_refresh_min_blend_delta)"/>
+    <param name="swarm_master/fixed_schedule_same_traj_refresh_min_progress_along"
+           value="$(arg swarm_master_fixed_schedule_refresh_min_progress_along)"/>
+    <param name="swarm_master/fixed_schedule_same_traj_force_refresh_interval"
+           value="$(arg swarm_master_fixed_schedule_force_refresh_interval)"/>
+    <param name="swarm_master/fixed_schedule_idle_same_traj_refresh_interval"
+           value="$(arg swarm_master_fixed_schedule_idle_refresh_interval)"/>
+    <param name="swarm_master/debug_same_traj_refresh"
+           value="$(arg swarm_master_debug_same_traj_refresh)" type="bool"/>
+    <param name="swarm_master/debug_fixed_schedule_manifest"
+           value="$(arg swarm_master_debug_fixed_schedule_manifest)" type="bool"/>
+    <param name="swarm_master/leader_traction_debug"
+           value="$(arg leader_traction_debug)" type="bool"/>
+    <param name="swarm_master/debug_ready_gate"
+           value="$(arg swarm_master_debug_ready_gate)" type="bool"/>
+    <param name="swarm_master/allow_idle_publish_without_agent_ready"
+           value="$(arg swarm_master_allow_idle_publish_without_agent_ready)" type="bool"/>
+    <param name="swarm_master/guidance_same_traj_c0_max_step"
+           value="$(arg swarm_master_guidance_same_traj_c0_max_step)"/>
     <param name="swarm_master/payload/template_rope_margin"
            value="$(arg payload_template_rope_margin)"/>
+    <param name="swarm_master/payload/extra_margin"
+           value="$(arg payload_extra_margin)"/>
+    <param name="swarm_master/cooperative_opt/payload_rope_relax"
+           value="$(arg swarm_master_coop_payload_rope_relax)"/>
+    <param name="swarm_master/cooperative_opt/payload_triangle_area_relax"
+           value="$(arg swarm_master_coop_payload_triangle_area_relax)"/>
+    <param name="swarm_master/cooperative_opt/leader_max_lateral_dev"
+           value="$(arg swarm_master_coop_leader_max_lateral_dev)"/>
+    <param name="swarm_master/cooperative_opt/leader_max_backward_dev"
+           value="$(arg swarm_master_coop_leader_max_backward_dev)"/>
+    <param name="swarm_master/cooperative_opt/leader_min_forward_speed"
+           value="$(arg swarm_master_coop_leader_min_forward_speed)"/>
+    <param name="swarm_master/cooperative_opt/leader_min_forward_speed_ratio"
+           value="$(arg swarm_master_coop_leader_min_forward_speed_ratio)"/>
     <param name="swarm_master/leader_state_timeout"
            value="$(arg swarm_master_leader_state_timeout)"/>
+    <param name="swarm_master/leader_state_timeout_grace"
+           value="$(arg swarm_master_leader_state_timeout_grace)"/>
     <param name="swarm_master/state_timeout"
            value="$(arg swarm_master_state_timeout)"/>
+    <param name="swarm_master/state_timeout_grace"
+           value="$(arg swarm_master_state_timeout_grace)"/>
+    <param name="swarm_master/guidance_topic_template"
+           value="$(arg swarm_master_guidance_topic_template)"/>
     <!-- GridMap 话题：接入主机传感器数据 -->
     <remap from="/grid_map/odom"  to="/visual_slam/odom"/>
     <remap from="/grid_map/cloud" to="/pcl_render_node/cloud"/>
+  </node>
+
+  <!-- 运行时编队切换链路：
+       1. swarm_master 发布 normal guidance 到 /swarm/master/agent_{id}/guidance_bezier
+       2. Program A 生成近似一字形 guidance 到 /swarm/program_a/agent_{id}/guidance_bezier
+       3. Program B 生成紧凑 V 形 guidance 到 /swarm/program_b/agent_{id}/guidance_bezier
+       4. guidance mux 按 /swarm/formation_mode 选择最终输出到 /swarm/agent_{id}/guidance_bezier
+       终端切换示例：
+       rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'program_a'"
+       rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'program_b'"
+       rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'normal'" -->
+  <node pkg="ego_planner" type="swarm_program_a_node"
+        name="swarm_program_a_node" output="screen">
+    <rosparam param="agent_ids">[1, 2]</rosparam>
+    <param name="mode_topic" value="$(arg formation_mode_topic)"/>
+    <param name="leader_guidance_topic" value="$(arg leader_corrected_topic)"/>
+    <param name="leader_state_topic" value="$(arg odom_topic)"/>
+    <param name="normal_guidance_topic_template"
+           value="$(arg swarm_master_guidance_topic_template)"/>
+    <param name="output_guidance_topic_template"
+           value="$(arg program_a_guidance_topic_template)"/>
+    <param name="line_spacing" value="$(arg program_a_line_spacing)"/>
+    <param name="transition_duration" value="$(arg program_a_transition_duration)"/>
+    <param name="agent2_phase_delay" value="$(arg program_a_agent2_phase_delay)"/>
+    <param name="same_traj_start_delay" value="$(arg program_a_same_traj_start_delay)"/>
+    <param name="refresh_min_interval" value="$(arg program_a_refresh_min_interval)"/>
+    <param name="refresh_min_alpha_delta" value="$(arg program_a_refresh_min_alpha_delta)"/>
+    <param name="publish_rate" value="$(arg program_a_publish_rate)"/>
+  </node>
+
+  <node pkg="ego_planner" type="swarm_program_b_node"
+        name="swarm_program_b_node" output="screen">
+    <rosparam param="agent_ids">[1, 2]</rosparam>
+    <param name="mode_topic" value="$(arg formation_mode_topic)"/>
+    <param name="leader_guidance_topic" value="$(arg leader_corrected_topic)"/>
+    <param name="leader_state_topic" value="$(arg odom_topic)"/>
+    <param name="normal_guidance_topic_template"
+           value="$(arg swarm_master_guidance_topic_template)"/>
+    <param name="output_guidance_topic_template"
+           value="$(arg program_b_guidance_topic_template)"/>
+    <param name="compact_spacing" value="$(arg program_b_compact_spacing)"/>
+    <param name="min_pair_distance" value="$(arg program_b_min_pair_distance)"/>
+    <param name="transition_duration" value="$(arg program_b_transition_duration)"/>
+    <param name="same_traj_start_delay" value="$(arg program_b_same_traj_start_delay)"/>
+    <param name="refresh_min_interval" value="$(arg program_b_refresh_min_interval)"/>
+    <param name="refresh_min_alpha_delta" value="$(arg program_b_refresh_min_alpha_delta)"/>
+    <param name="publish_rate" value="$(arg program_b_publish_rate)"/>
+  </node>
+
+  <node pkg="ego_planner" type="swarm_guidance_mux_node"
+        name="swarm_guidance_mux_node" output="screen">
+    <rosparam param="agent_ids">[1, 2]</rosparam>
+    <param name="mode_topic" value="$(arg formation_mode_topic)"/>
+    <param name="normal_guidance_topic_template"
+           value="$(arg swarm_master_guidance_topic_template)"/>
+    <param name="program_a_guidance_topic_template"
+           value="$(arg program_a_guidance_topic_template)"/>
+    <param name="program_b_guidance_topic_template"
+           value="$(arg program_b_guidance_topic_template)"/>
+    <param name="output_guidance_topic_template" value="/swarm/agent_{id}/guidance_bezier"/>
   </node>
 
   <!-- ============================================================
@@ -439,7 +636,9 @@
     <arg name="startup_bridge_head_max_speed" value="$(arg startup_bridge_head_max_speed)"/>
     <arg name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
     <arg name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
+    <arg name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
     <arg name="state_timeout" value="$(arg swarm_agent_state_timeout)"/>
+    <arg name="state_timeout_grace" value="$(arg swarm_agent_state_timeout_grace)"/>
   </include>
 
   <!-- ============================================================
@@ -485,7 +684,9 @@
     <arg name="startup_bridge_head_max_speed" value="$(arg startup_bridge_head_max_speed)"/>
     <arg name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
     <arg name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
+    <arg name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
     <arg name="state_timeout" value="$(arg swarm_agent_state_timeout)"/>
+    <arg name="state_timeout_grace" value="$(arg swarm_agent_state_timeout_grace)"/>
   </include>
 
   <!-- RViz 可视化 -->

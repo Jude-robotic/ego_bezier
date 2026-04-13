@@ -50,6 +50,9 @@ private:
     int obstacle_id{-1};
   };
 
+  // Forward declaration for member function signatures declared before full spec definition.
+  struct FixedObstacleSpec;
+
   void leaderBezierCallback(const ego_planner::BezierConstPtr &msg);
   void leaderStateCallback(const nav_msgs::OdometryConstPtr &msg);
   void agentStateCallback(const ego_planner::SwarmAgentStateConstPtr &msg, int agent_id);
@@ -137,8 +140,9 @@ private:
    *  返回 (3 x N) 矩阵，每列为归一化的 XY 平面航向 */
   Eigen::MatrixXd computeSmoothedHeadings(const Eigen::MatrixXd &ctrl_pts) const;
   std::string formatTopic(const std::string &topic_template, int agent_id) const;
-  void runFixedObstacleSchedule(const Eigen::MatrixXd &leader_ctrl_pts,
-                                const ros::Time &publish_start_time);
+  bool runFixedObstacleSchedule(const Eigen::MatrixXd &leader_ctrl_pts,
+                                const ros::Time &publish_start_time,
+                                bool same_leader_traj);
   bool optimizeFixedObstacleWindow(Eigen::MatrixXd &leader_corrected_ctrl,
                                    const Eigen::MatrixXd &leader_nominal_ctrl,
                                    std::unordered_map<int, Eigen::MatrixXd> &agent_ctrl_pts_map,
@@ -152,12 +156,21 @@ private:
                                    double release_blend,
                                    bool blanket_hold,
                                    std::vector<FormationCommand> &commands) const;
+  double applyFixedObstacleLeaderTraction(Eigen::MatrixXd &leader_ctrl_pts,
+                                          const FixedObstacleSpec &spec,
+                                          double leader_along) const;
   void buildDefaultFixedObstacleSchedule();
   void loadFixedObstacleSchedule();
   Eigen::Vector3d obstacleLocal(const int obstacle_id, const Eigen::Vector3d &world_pt) const;
   double obstacleAlong(const int obstacle_id, const Eigen::Vector3d &world_pt) const;
+  Eigen::Vector3d computeObstacleLeaderTractionTargetWorld(const FixedObstacleSpec &spec,
+                                                           const Eigen::Vector3d &reference_world) const;
+  double computeObstacleSignedClearance(const FixedObstacleSpec &spec,
+                                        const Eigen::Vector3d &point_world,
+                                        double radius) const;
   bool computePayloadPositionFromStates(Eigen::Vector3d &payload_center) const;
-  void applyFollowerBoundaryCorrections(std::unordered_map<int, Eigen::MatrixXd> &agent_ctrl_pts_map) const;
+  void applyFollowerBoundaryCorrections(std::unordered_map<int, Eigen::MatrixXd> &agent_ctrl_pts_map,
+                                        bool same_traj_refresh) const;
   void applyLeaderBoundaryCorrection(Eigen::MatrixXd &leader_ctrl_pts) const;
   double getSegmentDuration() const;
   Eigen::Vector3d evalBezierPosition(const Eigen::MatrixXd &ctrl_pts, double t) const;
@@ -180,6 +193,18 @@ private:
     double primary_span{1.0};
     double aux_span{0.2};
     Eigen::Vector3d leader_bias_local{Eigen::Vector3d::Zero()};
+  };
+
+  struct FixedObstacleLeaderTraction
+  {
+    bool enabled{false};
+    double window_enter{-0.2};
+    double window_exit{0.2};
+    double blend_in{1.0};
+    double blend_out{1.0};
+    double clearance_margin{0.0};
+    Eigen::Vector3d bias_local{Eigen::Vector3d::Zero()};
+    bool debug{false};
   };
 
   struct FixedObstacleSpec
@@ -208,6 +233,8 @@ private:
     double z_gap_high{2.0};
     double major_r{1.8};
     double minor_r{0.4};
+
+    FixedObstacleLeaderTraction leader_traction;
   };
 
   struct FixedObstacleRuntime
@@ -222,6 +249,18 @@ private:
     double last_release_blend{0.0};
   };
 
+  bool shouldPublishFixedScheduleUpdate(bool same_leader_traj,
+                                        int obstacle_id,
+                                        FixedObstacleState state,
+                                        bool blanket_hold,
+                                        double command_scale,
+                                        double min_clear_along) const;
+  void cacheFixedSchedulePublishSnapshot(int obstacle_id,
+                                         FixedObstacleState state,
+                                         bool blanket_hold,
+                                         double command_scale,
+                                         double min_clear_along,
+                                         const ros::Time &stamp);
   void enforcePayloadFeasibleTemplate(FixedObstacleSpec &spec) const;
   double computeTemplateCircumradius(const FixedObstacleSpec &spec) const;
 
@@ -252,6 +291,7 @@ private:
   std::string state_topic_template_;
   std::string guidance_topic_template_;
   double leader_state_timeout_{0.2};
+  double leader_state_timeout_grace_{0.0};
 
   std::string formation_type_;
   double formation_spacing_{1.6};
@@ -267,6 +307,7 @@ private:
 
   double start_time_offset_{0.0};
   double state_timeout_{0.2};
+  double state_timeout_grace_{0.0};
   // Bug-1 修复：guidance C0 跳变距离混合阈值 (m)
   // 当 ideal_P0 与从机实际位置偏差超过此值时，P1 完全按当前速度方向修正
   double guidance_c0_blend_dist_{0.3};
@@ -275,6 +316,13 @@ private:
   // 取值范围 [0,1]，0 表示完全保留理想编队 P2，1 表示完全按速度方向延伸
   // 仅在 blend > 0 时（即检测到 P0 跳变时）生效，无跳变时为 0 效果
   double guidance_c2_blend_weight_{0.6};
+
+  // 从机边界修正的 C0 死区/日志阈值与状态外推参数
+  double guidance_c0_deadzone_{0.08};
+  double guidance_log_jump_threshold_{0.05};
+  double guidance_state_prediction_gain_{1.0};
+  double guidance_state_prediction_max_dt_{0.20};
+  double guidance_same_traj_c0_max_step_{0.0};
 
   // ── 从机轨迹避障优化参数（Step 4.5 / Prompt 4-5 新增）──────────────
   bool   follower_collision_check_{true};     ///< 是否启用从机碰撞检测
@@ -334,11 +382,31 @@ private:
 
   bool use_fixed_obstacle_schedule_{false};
   bool disable_online_classification_{false};
+  bool leader_traction_debug_{false};
   bool refresh_guidance_on_same_leader_traj_{false};
+  bool allow_same_traj_refresh_without_fixed_schedule_{false};
+  bool debug_same_traj_refresh_{false};
+  bool debug_fixed_schedule_manifest_{false};
+  bool debug_ready_gate_{false};
+  bool allow_idle_publish_without_agent_ready_{false};
   bool fixed_obstacle_release_require_payload_clear_{true};
+  double fixed_schedule_same_traj_refresh_min_interval_{0.0};
+  double fixed_schedule_same_traj_refresh_min_blend_delta_{0.0};
+  double fixed_schedule_same_traj_force_refresh_interval_{0.0};
+  double fixed_schedule_same_traj_refresh_min_progress_along_{0.0};
+  double fixed_schedule_idle_same_traj_refresh_interval_{0.0};
+  double nonfixed_same_traj_refresh_interval_{0.0};
   std::vector<FixedObstacleSpec> fixed_obstacle_schedule_;
   std::vector<FixedObstacleRuntime> fixed_obstacle_runtimes_;
   int current_fixed_obstacle_idx_{0};
+  bool have_fixed_schedule_publish_snapshot_{false};
+  int last_fixed_schedule_publish_obstacle_id_{-1};
+  FixedObstacleState last_fixed_schedule_publish_state_{FixedObstacleState::IDLE};
+  bool last_fixed_schedule_publish_blanket_hold_{false};
+  double last_fixed_schedule_publish_blend_{0.0};
+  double last_fixed_schedule_publish_min_clear_along_{0.0};
+  ros::Time last_fixed_schedule_publish_stamp_;
+  ros::Time last_nonfixed_same_traj_publish_stamp_;
 
   double payload_rope_length_{1.0};
   double payload_radius_{0.2};
@@ -357,9 +425,15 @@ private:
   double cooperative_w_payload_obs_{160.0};
   double cooperative_w_sep_{40.0};
   double cooperative_payload_invalid_penalty_{2000.0};
+  double cooperative_payload_rope_relax_{0.0};
+  double cooperative_payload_triangle_area_relax_{0.0};
   int cooperative_max_iterations_{60};
   double cooperative_fd_eps_{1e-3};
   double cooperative_obstacle_search_radius_{1.5};
+  double cooperative_leader_max_lateral_dev_{0.0};
+  double cooperative_leader_max_backward_dev_{0.0};
+  double cooperative_leader_min_forward_speed_{0.0};
+  double cooperative_leader_min_forward_speed_ratio_{0.0};
 
   bool online_payload_opt_enabled_{true};
   int online_payload_window_segs_{3};

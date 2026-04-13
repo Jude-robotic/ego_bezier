@@ -4,6 +4,8 @@
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 
+#include <algorithm>
+
 class SwarmAgentStateReporter
 {
 public:
@@ -14,6 +16,8 @@ public:
     nh_.param("agent_id", agent_id_, 1);
     nh_.param("publish_rate", publish_rate_, 30.0);
     nh_.param("state_timeout", state_timeout_, 0.2);
+    nh_.param("state_timeout_grace", state_timeout_grace_, 0.0);
+    state_timeout_grace_ = std::max(0.0, state_timeout_grace_);
 
     odom_sub_ = nh_.subscribe("odom", 20, &SwarmAgentStateReporter::odomCallback, this);
     state_pub_ = nh_.advertise<ego_planner::SwarmAgentState>("state_out", 20);
@@ -21,7 +25,8 @@ public:
     pub_timer_ = nh_.createTimer(ros::Duration(1.0 / std::max(1.0, publish_rate_)),
                                  &SwarmAgentStateReporter::timerCallback, this);
 
-    ROS_INFO("[SwarmStateReporter] ready. agent_id=%d", agent_id_);
+    ROS_INFO("[SwarmStateReporter] ready. agent_id=%d timeout=%.2fs grace=%.2fs",
+             agent_id_, state_timeout_, state_timeout_grace_);
   }
 
 private:
@@ -50,7 +55,7 @@ private:
       out.velocity.z = last_odom_.twist.twist.linear.z;
 
       const double age = (ros::Time::now() - last_odom_time_).toSec();
-      out.is_valid = (age <= state_timeout_);
+      out.is_valid = (age <= state_timeout_ + state_timeout_grace_);
     }
     else
     {
@@ -71,6 +76,7 @@ private:
   int agent_id_{1};
   double publish_rate_{30.0};
   double state_timeout_{0.2};
+  double state_timeout_grace_{0.0};
 
   bool have_odom_{false};
   nav_msgs::Odometry last_odom_;

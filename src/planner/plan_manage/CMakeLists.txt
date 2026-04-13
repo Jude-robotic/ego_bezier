@@ -142,6 +142,27 @@ add_executable(swarm_guidance_traj_visualizer_node
 target_link_libraries(swarm_guidance_traj_visualizer_node ${catkin_LIBRARIES})
 add_dependencies(swarm_guidance_traj_visualizer_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
+# Swarm guidance mux node (runtime switching between normal guidance and custom program guidance)
+add_executable(swarm_guidance_mux_node
+  src/swarm_guidance_mux_node.cpp
+)
+target_link_libraries(swarm_guidance_mux_node ${catkin_LIBRARIES})
+add_dependencies(swarm_guidance_mux_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Program A: runtime approximate line-formation guidance generator
+add_executable(swarm_program_a_node
+  src/swarm_program_a_node.cpp
+)
+target_link_libraries(swarm_program_a_node ${catkin_LIBRARIES})
+add_dependencies(swarm_program_a_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Program B: runtime compact V-formation guidance generator
+add_executable(swarm_program_b_node
+  src/swarm_program_b_node.cpp
+)
+target_link_libraries(swarm_program_b_node ${catkin_LIBRARIES})
+add_dependencies(swarm_program_b_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
 # Swarm payload visualization node (actual/planned payload center and ropes)
 add_executable(swarm_payload_visualizer_node
   src/swarm_payload_visualizer_node.cpp

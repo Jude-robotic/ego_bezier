@@ -14,6 +14,19 @@
 namespace ego_planner
 {
 
+namespace
+{
+constexpr double kNormEps = 1e-8;
+
+Eigen::Vector3d safeNormalized(const Eigen::Vector3d &vec, const Eigen::Vector3d &fallback)
+{
+  const double n = vec.norm();
+  if (n < kNormEps)
+    return fallback;
+  return vec / n;
+}
+}  // namespace
+
   void EGOReplanFSM::init(ros::NodeHandle &nh)
   {
     current_wp_ = 0;
@@ -35,8 +48,18 @@ namespace ego_planner
     nh.param("fsm/waypoint_reach_thresh", waypoint_reach_thresh_, 0.8);
     nh.param("fsm/max_waypoint_replan_attempts", max_waypoint_replan_attempts_, 20);
     nh.param("fsm/max_waypoint_approach_time", max_waypoint_approach_time_, 60.0);
+    nh.param("fsm/replan_seed_pos_err_thresh", replan_seed_pos_err_thresh_, 1.0);
+    nh.param("fsm/replan_seed_vel_err_thresh", replan_seed_vel_err_thresh_, 0.8);
+    replan_seed_pos_err_thresh_ = std::max(0.0, replan_seed_pos_err_thresh_);
+    replan_seed_vel_err_thresh_ = std::max(0.0, replan_seed_vel_err_thresh_);
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
+    const int waypoint_count = std::max(0, std::min(waypoint_num_, 50));
+    if (waypoint_count != waypoint_num_)
+    {
+      ROS_WARN("[WaypointTracker] waypoint_num out of range (%d), clamp to %d", waypoint_num_, waypoint_count);
+      waypoint_num_ = waypoint_count;
+    }
     for (int i = 0; i < waypoint_num_; i++)
     {
       nh.param("fsm/waypoint" + to_string(i) + "_x", waypoints_[i][0], -1.0);
@@ -117,6 +140,12 @@ namespace ego_planner
 
   void EGOReplanFSM::planGlobalTrajbyGivenWps()
   {
+    if (waypoint_num_ <= 0)
+    {
+      ROS_ERROR("[WaypointTracker] Invalid waypoint_num=%d, skip global waypoint planning.", waypoint_num_);
+      return;
+    }
+
     std::vector<Eigen::Vector3d> wps(waypoint_num_);
     for (int i = 0; i < waypoint_num_; i++)
     {
@@ -138,7 +167,7 @@ namespace ego_planner
     Eigen::Vector3d start_vel = odom_vel_;
     if (start_vel.norm() < 0.1 && !wps.empty())
     {
-      Eigen::Vector3d dir = (wps[0] - odom_pos_).normalized();
+      Eigen::Vector3d dir = safeNormalized(wps[0] - odom_pos_, Eigen::Vector3d::UnitX());
       start_vel = dir * planner_manager_->pp_.max_vel_ * 0.3;
     }
     
@@ -480,15 +509,48 @@ namespace ego_planner
     ros::Time time_now = ros::Time::now();
     double t_cur = (time_now - info->start_time_).toSec();
 
-    start_pt_ = info->position_traj_.evaluateT(t_cur);
-    start_vel_ = info->velocity_traj_.evaluateT(t_cur);
-    start_acc_ = info->acceleration_traj_.evaluateT(t_cur);
+    const double t_eval = std::max(0.0, std::min(t_cur, std::max(0.0, info->duration_ - 1e-3)));
+    const Eigen::Vector3d traj_seed_pos = info->position_traj_.evaluateT(t_eval);
+    const Eigen::Vector3d traj_seed_vel = info->velocity_traj_.evaluateT(t_eval);
+    const Eigen::Vector3d traj_seed_acc = info->acceleration_traj_.evaluateT(t_eval);
 
-    bool success = callReboundReplan(false, false);
+    bool use_odom_seed = false;
+    if (have_odom_)
+    {
+      const double pos_err = (traj_seed_pos - odom_pos_).norm();
+      const double vel_err = (traj_seed_vel - odom_vel_).norm();
+      use_odom_seed = (pos_err > replan_seed_pos_err_thresh_) ||
+                      (vel_err > replan_seed_vel_err_thresh_);
+
+      if (use_odom_seed)
+      {
+        ROS_WARN_THROTTLE(0.5,
+                          "[WaypointTracker] REPLAN seed fallback to odom "
+                          "(pos_err=%.2f>%.2f || vel_err=%.2f>%.2f).",
+                          pos_err, replan_seed_pos_err_thresh_,
+                          vel_err, replan_seed_vel_err_thresh_);
+      }
+    }
+
+    if (use_odom_seed && have_odom_)
+    {
+      start_pt_ = odom_pos_;
+      start_vel_ = odom_vel_;
+      start_acc_.setZero();
+    }
+    else
+    {
+      start_pt_ = traj_seed_pos;
+      start_vel_ = traj_seed_vel;
+      start_acc_ = traj_seed_acc;
+    }
+
+    bool success = callReboundReplan(use_odom_seed, false);
 
     if (!success)
     {
-      success = callReboundReplan(true, false);
+      if (!use_odom_seed)
+        success = callReboundReplan(true, false);
       if (!success)
       {
         success = callReboundReplan(true, true);
@@ -652,13 +714,13 @@ namespace ego_planner
           if (current_waypoint_idx_ + 1 < (int)all_waypoints_.size())
           {
             // 使用Catmull-Rom风格的切线：当前方向与下一段方向的平均
-            Eigen::Vector3d to_current = (current_target_waypoint_ - odom_pos_).normalized();
-            Eigen::Vector3d to_next = (all_waypoints_[current_waypoint_idx_ + 1] - current_target_waypoint_).normalized();
-            next_dir = (to_current + to_next).normalized();
+            Eigen::Vector3d to_current = safeNormalized(current_target_waypoint_ - odom_pos_, Eigen::Vector3d::UnitX());
+            Eigen::Vector3d to_next = safeNormalized(all_waypoints_[current_waypoint_idx_ + 1] - current_target_waypoint_, to_current);
+            next_dir = safeNormalized(to_current + to_next, to_current);
           }
           else
           {
-            next_dir = (current_target_waypoint_ - odom_pos_).normalized();
+            next_dir = safeNormalized(current_target_waypoint_ - odom_pos_, Eigen::Vector3d::UnitX());
           }
           
           // 根据距离调整速度大小，但保持非零
@@ -731,7 +793,7 @@ namespace ego_planner
         // 如果全局轨迹速度太小，使用指向下一航点的方向
         if (local_target_vel_.norm() < 0.1 && current_waypoint_idx_ + 1 < (int)all_waypoints_.size())
         {
-          Eigen::Vector3d to_next = (all_waypoints_[current_waypoint_idx_ + 1] - current_target_waypoint_).normalized();
+          Eigen::Vector3d to_next = safeNormalized(all_waypoints_[current_waypoint_idx_ + 1] - current_target_waypoint_, Eigen::Vector3d::UnitX());
           local_target_vel_ = to_next * planner_manager_->pp_.max_vel_ * 0.5;
         }
         return;
@@ -752,7 +814,7 @@ namespace ego_planner
         // 确保速度不会太小
         if (local_target_vel_.norm() < planner_manager_->pp_.max_vel_ * 0.2)
         {
-          Eigen::Vector3d dir = (local_target_pt_ - odom_pos_).normalized();
+          Eigen::Vector3d dir = safeNormalized(local_target_pt_ - odom_pos_, Eigen::Vector3d::UnitX());
           local_target_vel_ = dir * planner_manager_->pp_.max_vel_ * 0.3;
         }
       }
@@ -846,7 +908,7 @@ namespace ego_planner
       // 确保速度不会太小导致停顿
       if (local_target_vel_.norm() < planner_manager_->pp_.max_vel_ * 0.2)
       {
-        Eigen::Vector3d dir = (local_target_pt_ - odom_pos_).normalized();
+        Eigen::Vector3d dir = safeNormalized(local_target_pt_ - odom_pos_, Eigen::Vector3d::UnitX());
         local_target_vel_ = dir * planner_manager_->pp_.max_vel_ * 0.3;
       }
     }
@@ -968,7 +1030,7 @@ namespace ego_planner
     // 如果当前速度太小，使用指向第一个航点的方向
     if (start_vel.norm() < 0.1 && !remaining_wps.empty())
     {
-      Eigen::Vector3d dir = (remaining_wps[0] - odom_pos_).normalized();
+      Eigen::Vector3d dir = safeNormalized(remaining_wps[0] - odom_pos_, Eigen::Vector3d::UnitX());
       start_vel = dir * planner_manager_->pp_.max_vel_ * 0.3;
     }
     
@@ -979,7 +1041,7 @@ namespace ego_planner
     if (remaining_wps.size() >= 2)
     {
       Eigen::Vector3d last_seg =
-          (remaining_wps.back() - remaining_wps[remaining_wps.size() - 2]).normalized();
+          safeNormalized(remaining_wps.back() - remaining_wps[remaining_wps.size() - 2], Eigen::Vector3d::UnitX());
       end_vel = last_seg * planner_manager_->pp_.max_vel_ * 0.3;
     }
 
