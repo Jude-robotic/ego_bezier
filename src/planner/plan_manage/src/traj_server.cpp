@@ -16,6 +16,8 @@
 #include <ros/ros.h>
 #include <traj_utils/polynomial_traj.h>
 
+#include <algorithm>
+
 ros::Publisher pos_cmd_pub;
 
 quadrotor_msgs::PositionCommand cmd;
@@ -35,6 +37,13 @@ bool preflight_ok_ = false;
 bool have_preflight_status_ = false;
 std::string preflight_ok_topic_ = "/swarm/preflight/ok";
 
+bool startup_sync_enabled_ = false;
+bool startup_sync_released_ = false;
+bool startup_sync_first_traj_buffered_ = false;
+bool startup_sync_first_traj_armed_ = false;
+double startup_sync_release_delay_sec_ = 0.03;
+std::string startup_sync_release_topic_ = "/swarm/startup_sync/release";
+
 Eigen::Vector3d odom_pos_(0.0, 0.0, 0.0);
 bool have_odom_ = false;
 
@@ -51,6 +60,38 @@ void preflightOkCallback(const std_msgs::BoolConstPtr &msg)
 {
   preflight_ok_ = msg->data;
   have_preflight_status_ = true;
+}
+
+void startupSyncReleaseCallback(const std_msgs::BoolConstPtr &msg)
+{
+  if (!startup_sync_enabled_)
+  {
+    return;
+  }
+
+  if (!msg->data)
+  {
+    return;
+  }
+
+  if (startup_sync_released_)
+  {
+    return;
+  }
+
+  startup_sync_released_ = true;
+  ROS_INFO("[Traj Server] startup-sync release received.");
+
+  if (startup_sync_first_traj_buffered_ && !startup_sync_first_traj_armed_)
+  {
+    start_time_ = ros::Time::now() + ros::Duration(startup_sync_release_delay_sec_);
+    receive_traj_ = true;
+    startup_sync_first_traj_buffered_ = false;
+    startup_sync_first_traj_armed_ = true;
+    traj_completed_ = false;
+    ROS_INFO("[Traj Server] first trajectory armed after release (start_in=%.3f s, id=%d).",
+             startup_sync_release_delay_sec_, traj_id_);
+  }
 }
 
 void odomCallback(const nav_msgs::OdometryConstPtr &msg)
@@ -163,21 +204,43 @@ void bezierCallback(ego_planner::BezierConstPtr msg)
   // 重置轨迹完成标志
   traj_completed_ = false;
 
-  // 首次轨迹（从机起飞）：将 start_time 修正为当前时刻
-  // 消除主机时间戳延迟导致的 t_cur 初始非零，确保从 P0（已设为从机当前位置）出发
-  if (!receive_traj_)
+  // startup-sync: 首条轨迹先预览缓存，待 release 后再统一起飞
+  if (startup_sync_enabled_ && !startup_sync_first_traj_armed_)
   {
-    const double lag = (ros::Time::now() - msg->start_time).toSec();
-    ROS_INFO("[Traj Server] First trajectory: overriding start_time to now "
-             "(lag=%.3f s, traj_id=%d)", lag, traj_id_);
-    start_time_ = ros::Time::now();
+    if (!startup_sync_released_)
+    {
+      startup_sync_first_traj_buffered_ = true;
+      receive_traj_ = false;
+      ROS_INFO("[Traj Server] startup-sync previewing first trajectory id=%d, waiting release on %s.",
+               traj_id_, startup_sync_release_topic_.c_str());
+      return;
+    }
+
+    start_time_ = ros::Time::now() + ros::Duration(startup_sync_release_delay_sec_);
+    receive_traj_ = true;
+    startup_sync_first_traj_armed_ = true;
+    startup_sync_first_traj_buffered_ = false;
+    ROS_INFO("[Traj Server] startup-sync already released, first trajectory armed id=%d start_in=%.3f s.",
+             traj_id_, startup_sync_release_delay_sec_);
   }
   else
   {
-    start_time_ = msg->start_time;
-  }
+    // 首次轨迹（从机起飞）：将 start_time 修正为当前时刻
+    // 消除主机时间戳延迟导致的 t_cur 初始非零，确保从 P0（已设为从机当前位置）出发
+    if (!receive_traj_)
+    {
+      const double lag = (ros::Time::now() - msg->start_time).toSec();
+      ROS_INFO("[Traj Server] First trajectory: overriding start_time to now "
+               "(lag=%.3f s, traj_id=%d)", lag, traj_id_);
+      start_time_ = ros::Time::now();
+    }
+    else
+    {
+      start_time_ = msg->start_time;
+    }
 
-  receive_traj_ = true;
+    receive_traj_ = true;
+  }
 
   ROS_DEBUG("[Traj Server] New trajectory received, id=%d, duration=%.2f", traj_id_, traj_duration_);
 }
@@ -242,6 +305,11 @@ void cmdCallback(const ros::TimerEvent &e)
 
   if (!receive_traj_)
   {
+    if (startup_sync_enabled_ && startup_sync_first_traj_buffered_ && !startup_sync_released_)
+    {
+      ROS_INFO_THROTTLE(1.0,
+                        "[Traj Server] startup-sync previewing first trajectory, waiting release.");
+    }
     // Keep the vehicle stationary before the first trajectory arrives.
     publishHoldCommand(time_now);
     return;
@@ -356,10 +424,19 @@ int main(int argc, char **argv)
 
   nh.param("require_preflight_ok", require_preflight_ok_, false);
   nh.param("preflight_ok_topic", preflight_ok_topic_, std::string("/swarm/preflight/ok"));
+  nh.param("startup_sync_enabled", startup_sync_enabled_, false);
+  nh.param("startup_sync_release_topic", startup_sync_release_topic_,
+           std::string("/swarm/startup_sync/release"));
+  nh.param("startup_sync_release_delay_sec", startup_sync_release_delay_sec_, 0.03);
+
+  startup_sync_release_delay_sec_ = std::max(0.0, startup_sync_release_delay_sec_);
+  startup_sync_released_ = !startup_sync_enabled_;
 
   ros::Subscriber bezier_sub = node.subscribe("planning/bezier", 10, bezierCallback);
   ros::Subscriber odom_sub = node.subscribe("/odom_world", 20, odomCallback);
   ros::Subscriber preflight_sub = node.subscribe(preflight_ok_topic_, 10, preflightOkCallback);
+  ros::Subscriber startup_sync_release_sub =
+      node.subscribe(startup_sync_release_topic_, 10, startupSyncReleaseCallback);
 
   pos_cmd_pub = node.advertise<quadrotor_msgs::PositionCommand>("/position_cmd", 50);
   ros::Timer cmd_timer = node.createTimer(ros::Duration(0.01), cmdCallback);
@@ -382,6 +459,10 @@ int main(int argc, char **argv)
 
   ROS_INFO("[Traj server] Bezier trajectory server started. require_preflight_ok=%d topic=%s",
            static_cast<int>(require_preflight_ok_), preflight_ok_topic_.c_str());
+  ROS_INFO("[Traj server] startup_sync: enabled=%d release_topic=%s release_delay=%.3f",
+           static_cast<int>(startup_sync_enabled_),
+           startup_sync_release_topic_.c_str(),
+           startup_sync_release_delay_sec_);
 
   ros::Duration(1.0).sleep();
 

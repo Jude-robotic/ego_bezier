@@ -88,6 +88,16 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
   state_timeout_grace_ = std::max(0.0, state_timeout_grace_);
   nh_.param("swarm_master/guidance_c0_blend_dist", guidance_c0_blend_dist_, 0.6);
   nh_.param("swarm_master/guidance_c2_blend_weight", guidance_c2_blend_weight_, 0.6);
+  nh_.param("swarm_master/guidance_c0_deadzone", guidance_c0_deadzone_, 0.08);
+  nh_.param("swarm_master/guidance_log_jump_threshold", guidance_log_jump_threshold_, 0.05);
+  nh_.param("swarm_master/guidance_state_prediction_gain", guidance_state_prediction_gain_, 1.0);
+  nh_.param("swarm_master/guidance_state_prediction_max_dt", guidance_state_prediction_max_dt_, 0.20);
+  nh_.param("swarm_master/guidance_same_traj_c0_max_step", guidance_same_traj_c0_max_step_, 0.0);
+  guidance_c0_deadzone_ = std::max(0.0, guidance_c0_deadzone_);
+  guidance_log_jump_threshold_ = std::max(0.0, guidance_log_jump_threshold_);
+  guidance_state_prediction_gain_ = std::max(0.0, guidance_state_prediction_gain_);
+  guidance_state_prediction_max_dt_ = std::max(0.0, guidance_state_prediction_max_dt_);
+  guidance_same_traj_c0_max_step_ = std::max(0.0, guidance_same_traj_c0_max_step_);
 
   // ── 从机避障优化参数（Prompt 4-5 新增）──
   nh_.param("swarm_master/follower_collision_check",       follower_collision_check_,        true);
@@ -119,8 +129,17 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
   nh_.param("swarm_master/disable_online_classification", disable_online_classification_, false);
   nh_.param("swarm_master/refresh_guidance_on_same_leader_traj",
             refresh_guidance_on_same_leader_traj_, false);
+  nh_.param("swarm_master/allow_same_traj_refresh_without_fixed_schedule",
+            allow_same_traj_refresh_without_fixed_schedule_, false);
+  nh_.param("swarm_master/nonfixed_same_traj_refresh_interval",
+            nonfixed_same_traj_refresh_interval_, 0.0);
   nh_.param("swarm_master/fixed_obstacle_release_require_payload_clear",
             fixed_obstacle_release_require_payload_clear_, true);
+  nh_.param("swarm_master/startup_sync_enabled", startup_sync_enabled_, false);
+  nh_.param("swarm_master/startup_sync_release_topic", startup_sync_release_topic_,
+            std::string("/swarm/startup_sync/release"));
+  nh_.param("swarm_master/startup_sync_same_traj_refresh_rate_hz",
+            startup_sync_same_traj_refresh_rate_hz_, 0.0);
   nh_.param("swarm_master/fixed_schedule_same_traj_refresh_min_interval",
             fixed_schedule_same_traj_refresh_min_interval_, 0.0);
   nh_.param("swarm_master/fixed_schedule_same_traj_refresh_min_blend_delta",
@@ -133,6 +152,11 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
       std::max(0.0, fixed_schedule_same_traj_refresh_min_blend_delta_);
     fixed_schedule_same_traj_force_refresh_interval_ =
       std::max(0.0, fixed_schedule_same_traj_force_refresh_interval_);
+  nonfixed_same_traj_refresh_interval_ =
+      std::max(0.0, nonfixed_same_traj_refresh_interval_);
+  startup_sync_same_traj_refresh_rate_hz_ =
+      std::max(0.0, startup_sync_same_traj_refresh_rate_hz_);
+  startup_sync_released_ = !startup_sync_enabled_;
   nh_.param("swarm_master/payload/rope_length", payload_rope_length_, 1.0);
   nh_.param("swarm_master/payload/radius", payload_radius_, 0.2);
   nh_.param("swarm_master/payload/extra_margin", payload_extra_margin_, 0.05);
@@ -161,6 +185,12 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
            static_cast<int>(online_payload_opt_enabled_), online_payload_window_segs_);
   ROS_INFO("[SwarmMaster] same leader traj refresh: enabled=%d",
            static_cast<int>(refresh_guidance_on_same_leader_traj_));
+  ROS_INFO("[SwarmMaster] nonfixed same-traj refresh gate: allow_without_fixed=%d interval=%.3fs startup_sync_rate=%.2fHz",
+           static_cast<int>(allow_same_traj_refresh_without_fixed_schedule_),
+           nonfixed_same_traj_refresh_interval_, startup_sync_same_traj_refresh_rate_hz_);
+  ROS_INFO("[SwarmMaster] startup-sync gate: enabled=%d released=%d topic=%s",
+           static_cast<int>(startup_sync_enabled_), static_cast<int>(startup_sync_released_),
+           startup_sync_release_topic_.c_str());
   ROS_INFO("[SwarmMaster] fixed schedule release: require_payload_clear=%d",
            static_cast<int>(fixed_obstacle_release_require_payload_clear_));
   ROS_INFO("[SwarmMaster] fixed schedule refresh gate: min_interval=%.2fs min_blend_delta=%.2f force_interval=%.2fs",
@@ -193,6 +223,11 @@ void SwarmMasterCoordinator::init(ros::NodeHandle &nh, GridMap::Ptr grid_map)
 
   leader_bezier_sub_ = nh_.subscribe(leader_bezier_topic_, 10, &SwarmMasterCoordinator::leaderBezierCallback, this);
   leader_state_sub_ = nh_.subscribe(leader_state_topic_, 20, &SwarmMasterCoordinator::leaderStateCallback, this);
+  if (startup_sync_enabled_)
+  {
+    startup_sync_release_sub_ = nh_.subscribe(startup_sync_release_topic_, 10,
+                                              &SwarmMasterCoordinator::startupSyncReleaseCallback, this);
+  }
   leader_corrected_pub_ = nh_.advertise<ego_planner::Bezier>(leader_corrected_topic_, 10);
   loadFixedObstacleSchedule();
 
@@ -250,6 +285,25 @@ void SwarmMasterCoordinator::agentStateCallback(const ego_planner::SwarmAgentSta
   st.stamp = msg->header.stamp;
   st.valid = msg->is_valid;
   agent_states_[agent_id] = st;
+}
+
+void SwarmMasterCoordinator::startupSyncReleaseCallback(const std_msgs::BoolConstPtr &msg)
+{
+  if (!startup_sync_enabled_)
+  {
+    return;
+  }
+
+  if (msg->data && !startup_sync_released_)
+  {
+    ROS_INFO("[SwarmMaster] startup-sync release received.");
+  }
+  if (!msg->data && startup_sync_released_)
+  {
+    ROS_WARN("[SwarmMaster] startup-sync release reset to false.");
+  }
+
+  startup_sync_released_ = msg->data;
 }
 
 void SwarmMasterCoordinator::planTimerCallback(const ros::TimerEvent & /*e*/)
@@ -1172,9 +1226,9 @@ void SwarmMasterCoordinator::applyFollowerBoundaryCorrections(
     std::unordered_map<int, Eigen::MatrixXd> &agent_ctrl_pts_map,
     bool same_traj_refresh) const
 {
-  (void)same_traj_refresh;
   const double ts_seg = getSegmentDuration();
   const int order = latest_leader_bezier_.order > 0 ? latest_leader_bezier_.order : 3;
+  const bool damp_same_traj_refresh = same_traj_refresh && !use_fixed_obstacle_schedule_;
 
   for (auto &kv : agent_ctrl_pts_map)
   {
@@ -1188,24 +1242,56 @@ void SwarmMasterCoordinator::applyFollowerBoundaryCorrections(
       continue;
     const AgentState &state = state_it->second;
 
+    const double state_age =
+        std::max(0.0, (ros::Time::now() - state.stamp).toSec());
+    const double pred_dt =
+        std::min(state_age, std::max(0.0, guidance_state_prediction_max_dt_));
+    const Eigen::Vector3d predicted_pos =
+        state.pos + (guidance_state_prediction_gain_ * pred_dt) * state.vel;
+
     const Eigen::Vector3d ideal_p0 = ctrl.col(0);
-    const double jump = (ideal_p0 - state.pos).norm();
-    if (jump < 0.08)
+    Eigen::Vector3d target_p0 = predicted_pos;
+    const Eigen::Vector3d raw_delta = target_p0 - ideal_p0;
+    const double raw_jump = raw_delta.norm();
+
+    if (raw_jump < guidance_c0_deadzone_)
       continue;
 
-    ctrl.col(0) = state.pos;
+    if (damp_same_traj_refresh && guidance_same_traj_c0_max_step_ > kFixedObsEps &&
+        raw_jump > guidance_same_traj_c0_max_step_)
+    {
+      target_p0 =
+          ideal_p0 + raw_delta * (guidance_same_traj_c0_max_step_ / raw_jump);
+    }
+
+    const double jump = (target_p0 - ideal_p0).norm();
+    if (jump < guidance_c0_deadzone_)
+      continue;
+
+    ctrl.col(0) = target_p0;
     const Eigen::Vector3d ideal_p1 = ctrl.col(1);
-    const Eigen::Vector3d vel_p1 = state.pos + (ts_seg / static_cast<double>(order)) * state.vel;
-    const double blend = std::min(1.0, jump / std::max(guidance_c0_blend_dist_, 1e-3));
+    const Eigen::Vector3d vel_p1 = target_p0 + (ts_seg / static_cast<double>(order)) * state.vel;
+    double blend = std::min(1.0, jump / std::max(guidance_c0_blend_dist_, 1e-3));
+    if (damp_same_traj_refresh)
+    {
+      // 同一 leader 轨迹的高频刷新场景下，降低速度方向注入，避免起飞期左右摆动。
+      blend = std::min(blend, 0.35);
+    }
     ctrl.col(1) = (1.0 - blend) * ideal_p1 + blend * vel_p1;
 
     const Eigen::Vector3d implied_vel =
         (static_cast<double>(order) / ts_seg) * (ctrl.col(1) - ctrl.col(0));
     const double speed = implied_vel.norm();
     if (speed > follower_max_vel_ && speed > 1e-6)
+    {
       ctrl.col(1) = ctrl.col(0) + (ts_seg / static_cast<double>(order)) * (implied_vel * (follower_max_vel_ / speed));
+      ROS_WARN_THROTTLE(0.5,
+                        "[SwarmMaster] agent=%d vel clamped: %.2f -> %.2f m/s",
+                        agent_id, speed, follower_max_vel_);
+    }
 
-    if (ctrl.cols() >= 3 && blend > 1e-3 && state.vel.norm() > 0.3)
+    if (!damp_same_traj_refresh && ctrl.cols() >= 3 && blend > 1e-3 &&
+        state.vel.norm() > 0.3)
     {
       const Eigen::Vector3d ideal_p2 = ctrl.col(2);
       const double seg_len = (ideal_p2 - ideal_p1).norm();
@@ -1216,6 +1302,13 @@ void SwarmMasterCoordinator::applyFollowerBoundaryCorrections(
         const double c2_alpha = std::min(1.0, blend * guidance_c2_blend_weight_);
         ctrl.col(2) = (1.0 - c2_alpha) * ideal_p2 + c2_alpha * vel_p2;
       }
+    }
+
+    if (jump > guidance_log_jump_threshold_)
+    {
+      ROS_WARN_THROTTLE(0.5,
+                        "[SwarmMaster] agent=%d C0_jump=%.3f m (raw=%.3f age=%.2f) blend=%.2f corrected.",
+                        agent_id, jump, raw_jump, state_age, blend);
     }
   }
 }
@@ -2552,10 +2645,38 @@ void SwarmMasterCoordinator::runOnce()
   const bool same_leader_traj =
       (latest_leader_bezier_.traj_id == last_published_leader_traj_id_) &&
       (std::fabs((latest_leader_bezier_.start_time - last_published_leader_start_time_).toSec()) < 1e-4);
+
+  const bool allow_nonfixed_preview_refresh =
+      startup_sync_enabled_ && !startup_sync_released_ &&
+      !use_fixed_obstacle_schedule_ &&
+      refresh_guidance_on_same_leader_traj_ &&
+      allow_same_traj_refresh_without_fixed_schedule_;
+
   const bool allow_same_traj_refresh =
-      use_fixed_obstacle_schedule_ && refresh_guidance_on_same_leader_traj_;
+      (use_fixed_obstacle_schedule_ && refresh_guidance_on_same_leader_traj_) ||
+      allow_nonfixed_preview_refresh;
+
   if (same_leader_traj && !allow_same_traj_refresh)
     return;
+
+  if (same_leader_traj && allow_nonfixed_preview_refresh)
+  {
+    double min_refresh_interval = nonfixed_same_traj_refresh_interval_;
+    if (startup_sync_same_traj_refresh_rate_hz_ > 1e-6)
+    {
+      min_refresh_interval = std::max(min_refresh_interval, 1.0 / startup_sync_same_traj_refresh_rate_hz_);
+    }
+
+    if (min_refresh_interval > 1e-6 && !last_nonfixed_same_traj_publish_stamp_.isZero())
+    {
+      const double dt = (ros::Time::now() - last_nonfixed_same_traj_publish_stamp_).toSec();
+      if (dt < min_refresh_interval)
+        return;
+    }
+
+    ROS_INFO_THROTTLE(1.0,
+                      "[SwarmMaster] startup-sync previewing same-traj refresh before release.");
+  }
 
   // 当 fixed schedule 需要对同一条 nominal leader 轨迹持续刷新时，
   // 控制点已经通过 boundary correction 重新锚定到当前状态。
@@ -3026,100 +3147,8 @@ void SwarmMasterCoordinator::runOnce()
 
   applySwarmCollisionPenalty(agent_ctrl_pts_map);
 
-  // === Bug-1 修复：guidance C0/C1 连续性保证 ===
-  // 根因：generateFormationGuidance 按新轨迹起点航向计算编队偏置。
-  // 当 leader 转弯重规划时，新旧航向可相差数十度，导致 guidance P0 相对
-  // 从机当前位置跳变幅度 ≈ formation_spacing (≈1.6 m)，引发从机剧烈抖动。
-  //
-  // 修复策略：
-  //   C0 — 将 guidance P0 强制设为从机实际位置（从机始终从自身当前点出发）
-  //   C1 — 将 P1 向"当前速度方向隐含点"混合：
-  //        jump < blend_dist  时保留理想编队 P1（稳态精度优先）
-  //        jump >= blend_dist 时完全采用速度方向（转弯边界平滑优先）
-  {
-    const double ts_seg = latest_leader_bezier_.segment_durations.empty()
-                              ? 0.1
-                              : latest_leader_bezier_.segment_durations[0];
-    const int order = latest_leader_bezier_.order > 0 ? latest_leader_bezier_.order : 3;
-
-    for (auto &kv : agent_ctrl_pts_map)
-    {
-      const int agent_id     = kv.first;
-      Eigen::MatrixXd &ctrl  = kv.second;
-      if (ctrl.cols() < 2) continue;
-
-      auto state_it = agent_states_.find(agent_id);
-      if (state_it == agent_states_.end() || !state_it->second.valid) continue;
-      const AgentState &state = state_it->second;
-
-      const Eigen::Vector3d ideal_p0 = ctrl.col(0);
-      const double jump              = (ideal_p0 - state.pos).norm();
-
-      // === 死区：偏差 < 0.08m 时不做任何修正，保持理想编队轨迹 ===
-      // 起飞初期 jump 虽小但非零，C1/C2 介入反而放大数值噪声
-      if (jump < 0.08)
-        continue;
-
-      // C0：强制起点 = 从机实际位置
-      ctrl.col(0) = state.pos;
-
-      // C1：在理想编队 P1 与速度方向 P1 之间线性混合
-      //     vel_p1 由 Bezier 微分关系导出：vel(0) = (order/ts)*(P1-P0)
-      //     => P1 = P0 + (ts/order)*vel
-      const Eigen::Vector3d ideal_p1 = ctrl.col(1);
-      const Eigen::Vector3d vel_p1   =
-          state.pos + (ts_seg / static_cast<double>(order)) * state.vel;
-      const double blend = std::min(1.0, jump / std::max(guidance_c0_blend_dist_, 1e-3));
-      ctrl.col(1) = (1.0 - blend) * ideal_p1 + blend * vel_p1;
-      // --- 速度钳制：防止 C0 跳变后隐含速度超限 ---
-      // Bezier 微分关系: vel(0) = (order/ts) * (P1 - P0)
-      // 若隐含速度 > follower_max_vel_，则缩短 P1 距离使其恰好满足约束
-      {
-        const Eigen::Vector3d p0_clamp = ctrl.col(0);
-        const Eigen::Vector3d p1_clamp = ctrl.col(1);
-        const Eigen::Vector3d implied_vel =
-            (static_cast<double>(order) / ts_seg) * (p1_clamp - p0_clamp);
-        const double speed = implied_vel.norm();
-        if (speed > follower_max_vel_ && speed > 1e-6) {
-          const Eigen::Vector3d vel_clamped = implied_vel * (follower_max_vel_ / speed);
-          ctrl.col(1) = p0_clamp + (ts_seg / static_cast<double>(order)) * vel_clamped;
-          ROS_WARN_THROTTLE(0.5,
-              "[SwarmMaster] agent=%d vel clamped: %.2f -> %.2f m/s",
-              agent_id, speed, follower_max_vel_);
-        }
-      }
-
-
-      // -----------------------------------------------------------------------
-      // C2 混合修正：消除 P1→P2 方向突变
-      // 当 blend > 0（检测到 P0 跳变）时，将 P2 向"从 P1 沿速度方向延伸"的虚拟点混合
-      // 原理：理想编队 P2 可能指向新的编队方向，与混合后的 P1 形成拐折；
-      //        沿速度方向延伸的 P2 使 P1→P2 段与实际速度对齐，消除曲率突变
-      // -----------------------------------------------------------------------
-      if (ctrl.cols() >= 3 && blend > 1e-3 && state.vel.norm() > 0.3)
-      {
-        const Eigen::Vector3d ideal_p2  = ctrl.col(2);         // 原始理想编队 P2
-        const Eigen::Vector3d p1_actual = ctrl.col(1);         // 已混合后的 P1
-        const double seg_len = (ideal_p2 - ideal_p1).norm();   // 保持段长度不变
-        if (seg_len > 1e-4)                                     // 安全保护：防止零长退化
-        {
-          // 沿速度方向从 P1 延伸相同距离得到"速度对齐的 P2"
-          Eigen::Vector3d vel_dir = state.vel;
-          if (vel_dir.norm() > 0.3) vel_dir.normalize();  // 速度 < 0.3m/s 时方向不可信
-          else                       vel_dir = (ideal_p2 - ideal_p1).normalized();
-          const Eigen::Vector3d vel_p2 = p1_actual + vel_dir * seg_len;
-          // 混合强度 = blend * guidance_c2_blend_weight_，允许独立调节 C2 修正幅度
-          const double c2_alpha = std::min(1.0, blend * guidance_c2_blend_weight_);
-          ctrl.col(2) = (1.0 - c2_alpha) * ideal_p2 + c2_alpha * vel_p2;
-        }
-      }
-
-        if (jump > 0.05)
-          ROS_WARN_THROTTLE(0.5,
-                            "[SwarmMaster] agent=%d C0_jump=%.3f m blend=%.2f corrected.",
-                            agent_id, jump, blend);
-      }
-    }
+  // 从机边界修正：统一通过 helper 执行，避免 runOnce/fixed-schedule 双份逻辑漂移。
+  applyFollowerBoundaryCorrections(agent_ctrl_pts_map, same_leader_traj);
 
   Eigen::MatrixXd leader_corrected_ctrl = leader_ctrl;
   if (online_payload_opt_enabled_)
@@ -3142,6 +3171,11 @@ void SwarmMasterCoordinator::runOnce()
     const ego_planner::Bezier msg =
         buildAgentBezierMsg(agent_id, kv.second, publish_start_time, ++out_traj_id_);
     pub_it->second.publish(msg);
+  }
+
+  if (allow_nonfixed_preview_refresh)
+  {
+    last_nonfixed_same_traj_publish_stamp_ = ros::Time::now();
   }
 
   last_published_leader_traj_id_ = latest_leader_bezier_.traj_id;

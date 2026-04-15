@@ -128,6 +128,13 @@ add_executable(swarm_takeoff_gate_node
 target_link_libraries(swarm_takeoff_gate_node ${catkin_LIBRARIES})
 add_dependencies(swarm_takeoff_gate_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
+# Swarm startup synchronization node
+add_executable(swarm_startup_sync_node
+  src/swarm_startup_sync_node.cpp
+)
+target_link_libraries(swarm_startup_sync_node ${catkin_LIBRARIES})
+add_dependencies(swarm_startup_sync_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
 # Swarm communication visualization node (master <-> followers)
 add_executable(swarm_comm_visualizer_node
   src/swarm_comm_visualizer_node.cpp

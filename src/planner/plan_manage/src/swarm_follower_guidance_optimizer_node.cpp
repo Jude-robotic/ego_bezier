@@ -3,9 +3,11 @@
 #include <plan_env/grid_map.h>
 #include <ros/ros.h>
 #include <nav_msgs/Odometry.h>
+#include <std_msgs/Bool.h>
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <vector>
 
 class SwarmFollowerGuidanceOptimizer
@@ -48,6 +50,29 @@ public:
 
     sub_ = nh_.subscribe("guidance_in", 10, &SwarmFollowerGuidanceOptimizer::guidanceCallback, this);
     pub_ = nh_.advertise<ego_planner::Bezier>("planning/bezier", 10);
+
+    nh_.param("startup_ready_enabled", startup_ready_enabled_, false);
+    nh_.param("startup_ready_topic", startup_ready_topic_, std::string("startup_ready"));
+    nh_.param("startup_ready_latch", startup_ready_latch_, true);
+    nh_.param("startup_ready_stale_timeout_sec", startup_ready_stale_timeout_sec_, 0.8);
+    nh_.param("startup_ready_watchdog_rate_hz", startup_ready_watchdog_rate_hz_, 10.0);
+    startup_ready_stale_timeout_sec_ = std::max(0.0, startup_ready_stale_timeout_sec_);
+    startup_ready_watchdog_rate_hz_ = std::max(1.0, startup_ready_watchdog_rate_hz_);
+
+    if (startup_ready_enabled_)
+    {
+      startup_ready_pub_ = nh_.advertise<std_msgs::Bool>(startup_ready_topic_, 1, startup_ready_latch_);
+      std_msgs::Bool ready_msg;
+      ready_msg.data = false;
+      startup_ready_pub_.publish(ready_msg);
+      startup_ready_watchdog_timer_ = nh_.createTimer(
+        ros::Duration(1.0 / startup_ready_watchdog_rate_hz_),
+        &SwarmFollowerGuidanceOptimizer::startupReadyWatchdogCallback,
+        this);
+      ROS_INFO("[FollowerGuidance] startup-ready publisher enabled. topic=%s stale_timeout=%.2fs latch=%d",
+           startup_ready_topic_.c_str(), startup_ready_stale_timeout_sec_,
+           static_cast<int>(startup_ready_latch_));
+    }
 
     // -------------------------------------------------------------------------
     // 被动避障初始化：odom 订阅 + 安全定时器（仅 use_local_map_ 时生效）
@@ -167,6 +192,45 @@ private:
     double speed{0.0};
     double turn_deg{0.0};
   };
+
+  void publishStartupReadyIfNeeded(const bool ready, const std::string &reason)
+  {
+    if (!startup_ready_enabled_)
+      return;
+
+    if (startup_ready_state_ == ready)
+      return;
+
+    startup_ready_state_ = ready;
+    std_msgs::Bool msg;
+    msg.data = ready;
+    startup_ready_pub_.publish(msg);
+
+    if (ready)
+    {
+      ROS_INFO("[FollowerGuidance] startup_ready=true reason=%s", reason.c_str());
+    }
+    else
+    {
+      ROS_WARN("[FollowerGuidance] startup_ready=false reason=%s", reason.c_str());
+    }
+  }
+
+  void startupReadyWatchdogCallback(const ros::TimerEvent &)
+  {
+    if (!startup_ready_enabled_ || !startup_ready_state_ || !have_last_guidance_msg_stamp_)
+      return;
+
+    if (startup_ready_stale_timeout_sec_ <= 1e-6)
+      return;
+
+    const double age = (ros::Time::now() - last_guidance_msg_stamp_).toSec();
+    if (age <= startup_ready_stale_timeout_sec_)
+      return;
+
+    bridge_first_publish_done_ = false;
+    publishStartupReadyIfNeeded(false, "guidance-stale-timeout");
+  }
 
   void publishHoverCommand(const ego_planner::Bezier &tmpl)
   {
@@ -520,11 +584,18 @@ private:
 
   void guidanceCallback(const ego_planner::BezierConstPtr &msg)
   {
+    last_guidance_msg_stamp_ = ros::Time::now();
+    have_last_guidance_msg_stamp_ = true;
+
     // -----------------------------------------------------------------------
     // 步骤 0：早返回检查——控制点过少时直接转发，不做任何修改
     // -----------------------------------------------------------------------
     if (static_cast<int>(msg->pos_pts.size()) < 4)
     {
+      if (startup_stage_ != StartupStage::TRACK_FORMATION)
+      {
+        publishStartupReadyIfNeeded(false, "guidance-too-short");
+      }
       ego_planner::Bezier out = *msg;
       out.start_time = msg->start_time;
       pub_.publish(out);
@@ -546,6 +617,10 @@ private:
     // 段数不合法时直接转发，保持与原有代码一致的早返回逻辑
     if (total_segs <= 0 || total_cols < 4)
     {
+      if (startup_stage_ != StartupStage::TRACK_FORMATION)
+      {
+        publishStartupReadyIfNeeded(false, "invalid-segment-layout");
+      }
       ego_planner::Bezier out = *msg;
       out.start_time = msg->start_time;
       pub_.publish(out);
@@ -571,6 +646,7 @@ private:
         guidance_stable_frames_ = 0;
         guidance_soft_stable_frames_ = 0;
         have_wait_guidance_soft_ready_stamp_ = false;
+        publishStartupReadyIfNeeded(false, "wait-guidance-no-odom");
         ROS_WARN_THROTTLE(1.0,
                           "[FollowerGuidance] WAIT_GUIDANCE: odom not ready, keep holding.");
         return;
@@ -687,6 +763,7 @@ private:
 
         if (!strict_lock_ready && !soft_lock_ready && !force_bridge_ready)
         {
+          publishStartupReadyIfNeeded(false, "wait-guidance-not-locked");
           ROS_INFO_THROTTLE(0.5,
                             "[FollowerGuidance] WAIT_GUIDANCE: strict=%d/%d soft=%d/%d soft_elapsed=%.2fs force_elapsed=%.2fs, holding before bridge.",
                             guidance_stable_frames_, guidance_lock_frames_,
@@ -714,6 +791,7 @@ private:
         startup_stage_ = StartupStage::HOVER_HOLD;
         stage_enter_stamp_ = ros::Time::now();
         hover_hold_count_ = 0;
+        bridge_first_publish_done_ = false;
         guidance_stable_frames_ = 0;
         guidance_soft_stable_frames_ = 0;
         have_wait_guidance_soft_ready_stamp_ = false;
@@ -728,6 +806,7 @@ private:
       if (startup_stage_ == StartupStage::HOVER_HOLD)
       {
         updateAnchorEstimate();
+        publishStartupReadyIfNeeded(false, "hover-hold");
         publishHoverCommand(*msg);
         ++hover_hold_count_;
         const double hold_elapsed = (ros::Time::now() - stage_enter_stamp_).toSec();
@@ -741,6 +820,7 @@ private:
           startup_stage_ = StartupStage::BRIDGE_TO_FORMATION;
           stage_enter_stamp_ = ros::Time::now();
           active_warmup_frames_ = std::max(1, bridge_frames_);
+          bridge_first_publish_done_ = false;
           freezeBridgeAnchor();
           ROS_INFO("[FollowerGuidance] Entering BRIDGE_TO_FORMATION (%d frames).",
                    active_warmup_frames_);
@@ -1020,6 +1100,12 @@ private:
     out.start_time = msg->start_time;  // 保持主机绝对时间戳
     pub_.publish(out);
 
+    if (startup_stage_ == StartupStage::BRIDGE_TO_FORMATION && !bridge_first_publish_done_)
+    {
+      bridge_first_publish_done_ = true;
+      publishStartupReadyIfNeeded(true, "first-bridge-trajectory-published");
+    }
+
     // 保存本次完整控制点和时间参数，供被动避障定时器使用
     last_full_ctrl_ = full_ctrl;
     last_ts_ = ts;
@@ -1204,6 +1290,18 @@ private:
   ros::NodeHandle nh_;
   ros::Subscriber sub_;
   ros::Publisher pub_;
+  ros::Publisher startup_ready_pub_;
+  ros::Timer startup_ready_watchdog_timer_;
+
+  bool startup_ready_enabled_{false};
+  bool startup_ready_latch_{true};
+  bool startup_ready_state_{false};
+  bool bridge_first_publish_done_{false};
+  std::string startup_ready_topic_{"startup_ready"};
+  double startup_ready_stale_timeout_sec_{0.8};
+  double startup_ready_watchdog_rate_hz_{10.0};
+  ros::Time last_guidance_msg_stamp_;
+  bool have_last_guidance_msg_stamp_{false};
 
   bool enable_local_refine_{true};
   bool enable_collision_rebound_{false};

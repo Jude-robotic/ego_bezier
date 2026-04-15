@@ -7,6 +7,7 @@
 #include <ego_planner/Bezier.h>
 #include <ego_planner/SwarmAgentState.h>
 #include <nav_msgs/Odometry.h>
+#include <std_msgs/Bool.h>
 #include <visualization_msgs/Marker.h>
 #include <string>
 #include <unordered_map>
@@ -56,6 +57,7 @@ private:
   void leaderBezierCallback(const ego_planner::BezierConstPtr &msg);
   void leaderStateCallback(const nav_msgs::OdometryConstPtr &msg);
   void agentStateCallback(const ego_planner::SwarmAgentStateConstPtr &msg, int agent_id);
+  void startupSyncReleaseCallback(const std_msgs::BoolConstPtr &msg);
   void planTimerCallback(const ros::TimerEvent &e);
 
   bool checkReady() const;
@@ -269,6 +271,7 @@ private:
 
   ros::Subscriber leader_bezier_sub_;
   ros::Subscriber leader_state_sub_;
+  ros::Subscriber startup_sync_release_sub_;
   std::vector<ros::Subscriber> agent_state_subs_;
   std::unordered_map<int, ros::Publisher> guidance_pubs_;
   ros::Publisher leader_corrected_pub_;
@@ -385,6 +388,8 @@ private:
   bool leader_traction_debug_{false};
   bool refresh_guidance_on_same_leader_traj_{false};
   bool allow_same_traj_refresh_without_fixed_schedule_{false};
+  bool startup_sync_enabled_{false};
+  bool startup_sync_released_{false};
   bool debug_same_traj_refresh_{false};
   bool debug_fixed_schedule_manifest_{false};
   bool debug_ready_gate_{false};
@@ -396,6 +401,8 @@ private:
   double fixed_schedule_same_traj_refresh_min_progress_along_{0.0};
   double fixed_schedule_idle_same_traj_refresh_interval_{0.0};
   double nonfixed_same_traj_refresh_interval_{0.0};
+  double startup_sync_same_traj_refresh_rate_hz_{0.0};
+  std::string startup_sync_release_topic_;
   std::vector<FixedObstacleSpec> fixed_obstacle_schedule_;
   std::vector<FixedObstacleRuntime> fixed_obstacle_runtimes_;
   int current_fixed_obstacle_idx_{0};

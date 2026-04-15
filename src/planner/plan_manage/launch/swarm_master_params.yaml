@@ -29,6 +29,15 @@ swarm_master:
   # C2 混合权重：消除 P1→P2 方向突变，取值 [0,1]
   # 0 = 完全保留理想编队 P2，1 = 完全按速度方向延伸
   guidance_c2_blend_weight: 0.6
+  # 从机边界修正去抖参数：
+  # - deadzone: C0 偏差小于该值时不修正，避免噪声触发
+  # - prediction: 使用 state.pos + gain*dt*vel 预测位置，抑制状态延迟
+  # - same_traj_c0_max_step: 同 leader 轨迹刷新时，限制每次 C0 修正最大步长
+  guidance_c0_deadzone: 0.08
+  guidance_log_jump_threshold: 0.05
+  guidance_state_prediction_gain: 1.0
+  guidance_state_prediction_max_dt: 0.20
+  guidance_same_traj_c0_max_step: 0.20
 
   formation:
     type: "V"

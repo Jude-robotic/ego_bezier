@@ -58,6 +58,14 @@
     <arg name="real_depth_topic" default="/camera/depth/image_rect_raw"/>
     <arg name="real_pose_topic" default="/camera/pose"/>
     <arg name="require_preflight_ok" default="false"/>
+    <arg name="startup_sync_enabled" default="false"/>
+    <arg name="startup_sync_release_topic" default="/swarm/startup_sync/release"/>
+    <arg name="startup_sync_release_delay_sec" default="0.03"/>
+    <arg name="startup_ready_enabled" default="false"/>
+    <arg name="startup_ready_topic" default="/swarm/agent_1/startup_ready"/>
+    <arg name="startup_ready_latch" default="true"/>
+    <arg name="startup_ready_stale_timeout_sec" default="0.8"/>
+    <arg name="startup_ready_watchdog_rate_hz" default="10.0"/>
 
     <group ns="$(arg ns)">
       <node pkg="so3_quadrotor_simulator" type="quadrotor_simulator_so3" name="quadrotor_simulator_so3" output="screen">
@@ -126,6 +134,11 @@
           <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
           <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
           <param name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
+          <param name="startup_ready_enabled" value="$(arg startup_ready_enabled)"/>
+          <param name="startup_ready_topic" value="$(arg startup_ready_topic)"/>
+          <param name="startup_ready_latch" value="$(arg startup_ready_latch)"/>
+          <param name="startup_ready_stale_timeout_sec" value="$(arg startup_ready_stale_timeout_sec)"/>
+          <param name="startup_ready_watchdog_rate_hz" value="$(arg startup_ready_watchdog_rate_hz)"/>
 
           <param name="optimization/lambda_smooth" value="0.5"/>
           <param name="optimization/lambda_collision" value="5.0"/>
@@ -187,6 +200,11 @@
               <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
               <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
               <param name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
+              <param name="startup_ready_enabled" value="$(arg startup_ready_enabled)"/>
+              <param name="startup_ready_topic" value="$(arg startup_ready_topic)"/>
+              <param name="startup_ready_latch" value="$(arg startup_ready_latch)"/>
+              <param name="startup_ready_stale_timeout_sec" value="$(arg startup_ready_stale_timeout_sec)"/>
+              <param name="startup_ready_watchdog_rate_hz" value="$(arg startup_ready_watchdog_rate_hz)"/>
 
               <param name="optimization/lambda_smooth" value="0.5"/>
               <param name="optimization/lambda_collision" value="5.0"/>
@@ -252,6 +270,11 @@
             <param name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
             <param name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
             <param name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
+            <param name="startup_ready_enabled" value="$(arg startup_ready_enabled)"/>
+            <param name="startup_ready_topic" value="$(arg startup_ready_topic)"/>
+            <param name="startup_ready_latch" value="$(arg startup_ready_latch)"/>
+            <param name="startup_ready_stale_timeout_sec" value="$(arg startup_ready_stale_timeout_sec)"/>
+            <param name="startup_ready_watchdog_rate_hz" value="$(arg startup_ready_watchdog_rate_hz)"/>
 
             <param name="optimization/lambda_smooth" value="0.5"/>
             <param name="optimization/lambda_collision" value="5.0"/>
@@ -284,6 +307,9 @@
       <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
         <param name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
         <param name="preflight_ok_topic" value="/swarm/preflight/ok"/>
+        <param name="startup_sync_enabled" value="$(arg startup_sync_enabled)"/>
+        <param name="startup_sync_release_topic" value="$(arg startup_sync_release_topic)"/>
+        <param name="startup_sync_release_delay_sec" value="$(arg startup_sync_release_delay_sec)"/>
         <remap from="/odom_world" to="odom"/>
         <remap from="/position_cmd" to="planning/pos_cmd"/>
       </node>

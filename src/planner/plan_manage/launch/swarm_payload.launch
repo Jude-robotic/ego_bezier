@@ -62,6 +62,15 @@
   <arg name="startup_bridge_head_max_acc" default="1.8"/>
   <arg name="startup_bridge_p2_pos_margin" default="0.16"/>
   <arg name="startup_force_bridge_timeout" default="0.0"/>
+       <arg name="startup_sync_enabled" default="true"/>
+       <arg name="startup_sync_release_topic" default="/swarm/startup_sync/release"/>
+       <arg name="startup_sync_release_delay_sec" default="0.03"/>
+       <arg name="startup_sync_ready_timeout_sec" default="2.0"/>
+       <arg name="startup_sync_ready_safety_margin_sec" default="0.10"/>
+       <arg name="startup_sync_timeout_action" default="release"/>
+       <arg name="startup_sync_same_traj_refresh_rate_hz" default="10.0"/>
+       <arg name="startup_sync_watchdog_rate_hz" default="20.0"/>
+       <arg name="startup_ready_stale_timeout_sec" default="0.8"/>
 
   <!-- ── Follower 1 初始位置（走廊起点 V 形编队，leader 在 -18,0,1）── -->
   <arg name="uav1_init_x" default="-19.31"/>
@@ -141,7 +150,9 @@
   <arg name="online_payload_opt_enabled" default="false"/>
   <arg name="online_payload_window_segs" default="3"/>
   <arg name="fixed_obstacle_release_require_payload_clear" default="false"/>
-  <arg name="swarm_master_refresh_on_same_leader_traj" default="true"/>
+  <arg name="swarm_master_refresh_on_same_leader_traj" default="false"/>
+         <arg name="swarm_master_allow_same_traj_refresh_without_fixed_schedule" default="false"/>
+       <arg name="swarm_master_nonfixed_same_traj_refresh_interval" default="0.0"/>
   <!-- 保持与 longhall 相同的 guidance 刷新配置。 -->
   <arg name="swarm_master_fixed_schedule_refresh_min_interval" default="0.35"/>
   <arg name="swarm_master_fixed_schedule_refresh_min_blend_delta" default="0.12"/>
@@ -245,11 +256,26 @@
   <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
     <param name="require_preflight_ok" value="$(arg require_preflight_ok)"/>
     <param name="preflight_ok_topic"   value="/swarm/preflight/ok"/>
+              <param name="startup_sync_enabled" value="$(arg startup_sync_enabled)"/>
+              <param name="startup_sync_release_topic" value="$(arg startup_sync_release_topic)"/>
+              <param name="startup_sync_release_delay_sec" value="$(arg startup_sync_release_delay_sec)"/>
     <remap from="/position_cmd"  to="planning/pos_cmd"/>
     <remap from="/odom_world"    to="$(arg odom_topic)"/>
     <remap from="planning/bezier" to="$(arg leader_corrected_topic)"/>
     <param name="traj_server/time_forward" value="1.0" type="double"/>
   </node>
+
+       <node pkg="ego_planner" type="swarm_startup_sync_node"
+                            name="swarm_startup_sync_node" output="screen">
+              <param name="startup_sync_enabled" value="$(arg startup_sync_enabled)"/>
+              <param name="leader_first_traj_topic" value="$(arg leader_corrected_topic)"/>
+              <param name="release_topic" value="$(arg startup_sync_release_topic)"/>
+              <param name="ready_timeout_sec" value="$(arg startup_sync_ready_timeout_sec)"/>
+              <param name="ready_timeout_safety_margin_sec" value="$(arg startup_sync_ready_safety_margin_sec)"/>
+              <param name="timeout_action" value="$(arg startup_sync_timeout_action)"/>
+              <param name="watchdog_rate_hz" value="$(arg startup_sync_watchdog_rate_hz)"/>
+              <rosparam param="follower_ready_topics">['/swarm/agent_1/startup_ready', '/swarm/agent_2/startup_ready']</rosparam>
+       </node>
 
   <!-- 起飞门控节点（等待预检通过后才放行触发信号）-->
   <node pkg="ego_planner" type="swarm_takeoff_gate_node"
@@ -304,6 +330,16 @@
          value="$(arg fixed_obstacle_release_require_payload_clear)" type="bool"/>
   <param name="/swarm_master_node/swarm_master/refresh_guidance_on_same_leader_traj"
          value="$(arg swarm_master_refresh_on_same_leader_traj)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/allow_same_traj_refresh_without_fixed_schedule"
+         value="$(arg swarm_master_allow_same_traj_refresh_without_fixed_schedule)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/nonfixed_same_traj_refresh_interval"
+         value="$(arg swarm_master_nonfixed_same_traj_refresh_interval)"/>
+  <param name="/swarm_master_node/swarm_master/startup_sync_enabled"
+         value="$(arg startup_sync_enabled)" type="bool"/>
+  <param name="/swarm_master_node/swarm_master/startup_sync_release_topic"
+         value="$(arg startup_sync_release_topic)"/>
+  <param name="/swarm_master_node/swarm_master/startup_sync_same_traj_refresh_rate_hz"
+         value="$(arg startup_sync_same_traj_refresh_rate_hz)"/>
   <param name="/swarm_master_node/swarm_master/fixed_schedule_same_traj_refresh_min_interval"
          value="$(arg swarm_master_fixed_schedule_refresh_min_interval)"/>
   <param name="/swarm_master_node/swarm_master/fixed_schedule_same_traj_refresh_min_blend_delta"
@@ -377,6 +413,16 @@
            value="$(arg fixed_obstacle_release_require_payload_clear)" type="bool"/>
     <param name="swarm_master/refresh_guidance_on_same_leader_traj"
            value="$(arg swarm_master_refresh_on_same_leader_traj)" type="bool"/>
+    <param name="swarm_master/allow_same_traj_refresh_without_fixed_schedule"
+           value="$(arg swarm_master_allow_same_traj_refresh_without_fixed_schedule)" type="bool"/>
+    <param name="swarm_master/nonfixed_same_traj_refresh_interval"
+           value="$(arg swarm_master_nonfixed_same_traj_refresh_interval)"/>
+    <param name="swarm_master/startup_sync_enabled"
+           value="$(arg startup_sync_enabled)" type="bool"/>
+    <param name="swarm_master/startup_sync_release_topic"
+           value="$(arg startup_sync_release_topic)"/>
+    <param name="swarm_master/startup_sync_same_traj_refresh_rate_hz"
+           value="$(arg startup_sync_same_traj_refresh_rate_hz)"/>
     <param name="swarm_master/fixed_schedule_same_traj_refresh_min_interval"
            value="$(arg swarm_master_fixed_schedule_refresh_min_interval)"/>
     <param name="swarm_master/fixed_schedule_same_traj_refresh_min_blend_delta"
@@ -637,6 +683,12 @@
     <arg name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
     <arg name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
     <arg name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
+              <arg name="startup_sync_enabled" value="$(arg startup_sync_enabled)"/>
+              <arg name="startup_sync_release_topic" value="$(arg startup_sync_release_topic)"/>
+              <arg name="startup_sync_release_delay_sec" value="$(arg startup_sync_release_delay_sec)"/>
+              <arg name="startup_ready_enabled" value="$(arg startup_sync_enabled)"/>
+              <arg name="startup_ready_topic" value="/swarm/agent_1/startup_ready"/>
+              <arg name="startup_ready_stale_timeout_sec" value="$(arg startup_ready_stale_timeout_sec)"/>
     <arg name="state_timeout" value="$(arg swarm_agent_state_timeout)"/>
     <arg name="state_timeout_grace" value="$(arg swarm_agent_state_timeout_grace)"/>
   </include>
@@ -685,6 +737,12 @@
     <arg name="startup_bridge_head_max_acc" value="$(arg startup_bridge_head_max_acc)"/>
     <arg name="startup_bridge_p2_pos_margin" value="$(arg startup_bridge_p2_pos_margin)"/>
     <arg name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
+              <arg name="startup_sync_enabled" value="$(arg startup_sync_enabled)"/>
+              <arg name="startup_sync_release_topic" value="$(arg startup_sync_release_topic)"/>
+              <arg name="startup_sync_release_delay_sec" value="$(arg startup_sync_release_delay_sec)"/>
+              <arg name="startup_ready_enabled" value="$(arg startup_sync_enabled)"/>
+              <arg name="startup_ready_topic" value="/swarm/agent_2/startup_ready"/>
+              <arg name="startup_ready_stale_timeout_sec" value="$(arg startup_ready_stale_timeout_sec)"/>
     <arg name="state_timeout" value="$(arg swarm_agent_state_timeout)"/>
     <arg name="state_timeout_grace" value="$(arg swarm_agent_state_timeout_grace)"/>
   </include>
