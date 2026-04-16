@@ -40,6 +40,8 @@
   <arg name="startup_guidance_soft_lock_timeout" default="0.35"/>
   <arg name="startup_bridge_duration" default="0.8"/>
   <arg name="startup_hover_timeout" default="0.4"/>
+  <arg name="startup_hover_min_guidance_msgs" default="1"/>
+  <arg name="startup_bridge_min_guidance_msgs" default="1"/>
   <arg name="startup_warmup_frames" default="15"/>
   <arg name="startup_bridge_stitch_pos_margin" default="0.15"/>
   <arg name="startup_bridge_max_stitch_speed" default="0.25"/>
@@ -60,6 +62,7 @@
   <arg name="startup_force_bridge_timeout" default="0.0"/>
   <arg name="startup_sync_enabled" default="true"/>
   <arg name="startup_sync_release_topic" default="/swarm/startup_sync/release"/>
+  <arg name="startup_sync_ignore_running_traj_before_release" default="true"/>
   <arg name="startup_sync_release_delay_sec" default="0.03"/>
   <arg name="startup_sync_ready_timeout_sec" default="2.0"/>
   <arg name="startup_sync_ready_safety_margin_sec" default="0.10"/>
@@ -67,6 +70,8 @@
   <arg name="startup_sync_same_traj_refresh_rate_hz" default="10.0"/>
   <arg name="startup_sync_watchdog_rate_hz" default="20.0"/>
   <arg name="startup_ready_stale_timeout_sec" default="0.8"/>
+  <arg name="startup_ready_watchdog_stop_after_release" default="true"/>
+  <arg name="startup_ready_watchdog_stop_after_track_formation" default="false"/>
 
   <!-- ── Follower 1 初始位置（走廊起点 V 形编队，leader 在 -18,0,1）── -->
   <arg name="uav1_init_x" default="-19.31"/>
@@ -142,6 +147,12 @@
   <arg name="swarm_master_refresh_on_same_leader_traj" default="false"/>
   <arg name="swarm_master_allow_same_traj_refresh_without_fixed_schedule" default="false"/>
   <arg name="swarm_master_nonfixed_same_traj_refresh_interval" default="0.0"/>
+  <arg name="swarm_master_guidance_boundary_ctrl_points" default="7"/>
+  <arg name="swarm_master_guidance_boundary_blend_power" default="1.45"/>
+  <arg name="swarm_master_guidance_boundary_anchor_max_speed" default="0.28"/>
+  <arg name="swarm_master_guidance_boundary_head_max_turn_deg" default="22.0"/>
+  <arg name="swarm_master_guidance_boundary_head_max_speed" default="0.85"/>
+  <arg name="swarm_master_guidance_boundary_head_max_acc" default="1.8"/>
 
   <!-- ── 运行时编队切换（参考 swarm_payload.launch 架构）── -->
   <arg name="formation_mode_topic" default="/swarm/formation_mode"/>
@@ -189,7 +200,7 @@
     <arg name="fy" value="387.229248046875"/>
 
     <!-- 动力学上限 -->
-    <arg name="max_vel"          value="1.5"/>
+    <arg name="max_vel"          value="1.0"/>
     <arg name="max_acc"          value="2.0"/>
     <arg name="planning_horizon" value="7.5"/>
 
@@ -306,6 +317,18 @@
       value="$(arg swarm_master_allow_same_traj_refresh_without_fixed_schedule)" type="bool"/>
     <param name="/swarm_master_node/swarm_master/nonfixed_same_traj_refresh_interval"
       value="$(arg swarm_master_nonfixed_same_traj_refresh_interval)"/>
+    <param name="/swarm_master_node/swarm_master/guidance_boundary_ctrl_points"
+      value="$(arg swarm_master_guidance_boundary_ctrl_points)"/>
+    <param name="/swarm_master_node/swarm_master/guidance_boundary_blend_power"
+      value="$(arg swarm_master_guidance_boundary_blend_power)"/>
+    <param name="/swarm_master_node/swarm_master/guidance_boundary_anchor_max_speed"
+      value="$(arg swarm_master_guidance_boundary_anchor_max_speed)"/>
+    <param name="/swarm_master_node/swarm_master/guidance_boundary_head_max_turn_deg"
+      value="$(arg swarm_master_guidance_boundary_head_max_turn_deg)"/>
+    <param name="/swarm_master_node/swarm_master/guidance_boundary_head_max_speed"
+      value="$(arg swarm_master_guidance_boundary_head_max_speed)"/>
+    <param name="/swarm_master_node/swarm_master/guidance_boundary_head_max_acc"
+      value="$(arg swarm_master_guidance_boundary_head_max_acc)"/>
     <param name="/swarm_master_node/swarm_master/startup_sync_enabled"
       value="$(arg startup_sync_enabled)" type="bool"/>
     <param name="/swarm_master_node/swarm_master/startup_sync_release_topic"
@@ -349,6 +372,18 @@
           value="$(arg swarm_master_allow_same_traj_refresh_without_fixed_schedule)" type="bool"/>
         <param name="swarm_master/nonfixed_same_traj_refresh_interval"
           value="$(arg swarm_master_nonfixed_same_traj_refresh_interval)"/>
+        <param name="swarm_master/guidance_boundary_ctrl_points"
+          value="$(arg swarm_master_guidance_boundary_ctrl_points)"/>
+        <param name="swarm_master/guidance_boundary_blend_power"
+          value="$(arg swarm_master_guidance_boundary_blend_power)"/>
+        <param name="swarm_master/guidance_boundary_anchor_max_speed"
+          value="$(arg swarm_master_guidance_boundary_anchor_max_speed)"/>
+        <param name="swarm_master/guidance_boundary_head_max_turn_deg"
+          value="$(arg swarm_master_guidance_boundary_head_max_turn_deg)"/>
+        <param name="swarm_master/guidance_boundary_head_max_speed"
+          value="$(arg swarm_master_guidance_boundary_head_max_speed)"/>
+        <param name="swarm_master/guidance_boundary_head_max_acc"
+          value="$(arg swarm_master_guidance_boundary_head_max_acc)"/>
         <param name="swarm_master/startup_sync_enabled"
           value="$(arg startup_sync_enabled)" type="bool"/>
         <param name="swarm_master/startup_sync_release_topic"
@@ -561,6 +596,8 @@
     <arg name="startup_guidance_soft_lock_timeout" value="$(arg startup_guidance_soft_lock_timeout)"/>
     <arg name="startup_bridge_duration" value="$(arg startup_bridge_duration)"/>
     <arg name="startup_hover_timeout" value="$(arg startup_hover_timeout)"/>
+    <arg name="startup_hover_min_guidance_msgs" value="$(arg startup_hover_min_guidance_msgs)"/>
+    <arg name="startup_bridge_min_guidance_msgs" value="$(arg startup_bridge_min_guidance_msgs)"/>
     <arg name="startup_warmup_frames" value="$(arg startup_warmup_frames)"/>
     <arg name="startup_bridge_stitch_pos_margin" value="$(arg startup_bridge_stitch_pos_margin)"/>
     <arg name="startup_bridge_max_stitch_speed" value="$(arg startup_bridge_max_stitch_speed)"/>
@@ -581,10 +618,13 @@
     <arg name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
     <arg name="startup_sync_enabled" value="$(arg startup_sync_enabled)"/>
     <arg name="startup_sync_release_topic" value="$(arg startup_sync_release_topic)"/>
+    <arg name="startup_sync_ignore_running_traj_before_release" value="$(arg startup_sync_ignore_running_traj_before_release)"/>
     <arg name="startup_sync_release_delay_sec" value="$(arg startup_sync_release_delay_sec)"/>
     <arg name="startup_ready_enabled" value="$(arg startup_sync_enabled)"/>
     <arg name="startup_ready_topic" value="/swarm/agent_1/startup_ready"/>
     <arg name="startup_ready_stale_timeout_sec" value="$(arg startup_ready_stale_timeout_sec)"/>
+    <arg name="startup_ready_watchdog_stop_after_release" value="$(arg startup_ready_watchdog_stop_after_release)"/>
+    <arg name="startup_ready_watchdog_stop_after_track_formation" value="$(arg startup_ready_watchdog_stop_after_track_formation)"/>
     <arg name="state_timeout" value="$(arg swarm_agent_state_timeout)"/>
   </include>
 
@@ -614,6 +654,8 @@
     <arg name="startup_guidance_soft_lock_timeout" value="$(arg startup_guidance_soft_lock_timeout)"/>
     <arg name="startup_bridge_duration" value="$(arg startup_bridge_duration)"/>
     <arg name="startup_hover_timeout" value="$(arg startup_hover_timeout)"/>
+    <arg name="startup_hover_min_guidance_msgs" value="$(arg startup_hover_min_guidance_msgs)"/>
+    <arg name="startup_bridge_min_guidance_msgs" value="$(arg startup_bridge_min_guidance_msgs)"/>
     <arg name="startup_warmup_frames" value="$(arg startup_warmup_frames)"/>
     <arg name="startup_bridge_stitch_pos_margin" value="$(arg startup_bridge_stitch_pos_margin)"/>
     <arg name="startup_bridge_max_stitch_speed" value="$(arg startup_bridge_max_stitch_speed)"/>
@@ -634,10 +676,13 @@
     <arg name="startup_force_bridge_timeout" value="$(arg startup_force_bridge_timeout)"/>
     <arg name="startup_sync_enabled" value="$(arg startup_sync_enabled)"/>
     <arg name="startup_sync_release_topic" value="$(arg startup_sync_release_topic)"/>
+    <arg name="startup_sync_ignore_running_traj_before_release" value="$(arg startup_sync_ignore_running_traj_before_release)"/>
     <arg name="startup_sync_release_delay_sec" value="$(arg startup_sync_release_delay_sec)"/>
     <arg name="startup_ready_enabled" value="$(arg startup_sync_enabled)"/>
     <arg name="startup_ready_topic" value="/swarm/agent_2/startup_ready"/>
     <arg name="startup_ready_stale_timeout_sec" value="$(arg startup_ready_stale_timeout_sec)"/>
+    <arg name="startup_ready_watchdog_stop_after_release" value="$(arg startup_ready_watchdog_stop_after_release)"/>
+    <arg name="startup_ready_watchdog_stop_after_track_formation" value="$(arg startup_ready_watchdog_stop_after_track_formation)"/>
     <arg name="state_timeout" value="$(arg swarm_agent_state_timeout)"/>
   </include>
 

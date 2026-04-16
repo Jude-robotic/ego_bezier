@@ -807,7 +807,6 @@ private:
       {
         updateAnchorEstimate();
         publishStartupReadyIfNeeded(false, "hover-hold");
-        publishHoverCommand(*msg);
         ++hover_hold_count_;
         const double hold_elapsed = (ros::Time::now() - stage_enter_stamp_).toSec();
         ROS_INFO_THROTTLE(0.5,
@@ -825,7 +824,11 @@ private:
           ROS_INFO("[FollowerGuidance] Entering BRIDGE_TO_FORMATION (%d frames).",
                    active_warmup_frames_);
         }
-        return;
+        else
+        {
+          publishHoverCommand(*msg);
+          return;
+        }
       }
     }
 

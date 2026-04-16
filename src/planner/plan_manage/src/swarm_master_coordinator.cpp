@@ -2646,20 +2646,24 @@ void SwarmMasterCoordinator::runOnce()
       (latest_leader_bezier_.traj_id == last_published_leader_traj_id_) &&
       (std::fabs((latest_leader_bezier_.start_time - last_published_leader_start_time_).toSec()) < 1e-4);
 
-  const bool allow_nonfixed_preview_refresh =
+    const bool startup_sync_preview_refresh =
       startup_sync_enabled_ && !startup_sync_released_ &&
+      same_leader_traj && refresh_guidance_on_same_leader_traj_;
+
+  const bool allow_nonfixed_preview_refresh =
+      startup_sync_preview_refresh &&
       !use_fixed_obstacle_schedule_ &&
-      refresh_guidance_on_same_leader_traj_ &&
       allow_same_traj_refresh_without_fixed_schedule_;
 
   const bool allow_same_traj_refresh =
       (use_fixed_obstacle_schedule_ && refresh_guidance_on_same_leader_traj_) ||
-      allow_nonfixed_preview_refresh;
+      allow_nonfixed_preview_refresh ||
+      startup_sync_preview_refresh;
 
   if (same_leader_traj && !allow_same_traj_refresh)
     return;
 
-  if (same_leader_traj && allow_nonfixed_preview_refresh)
+  if (same_leader_traj && startup_sync_preview_refresh)
   {
     double min_refresh_interval = nonfixed_same_traj_refresh_interval_;
     if (startup_sync_same_traj_refresh_rate_hz_ > 1e-6)
@@ -2673,6 +2677,8 @@ void SwarmMasterCoordinator::runOnce()
       if (dt < min_refresh_interval)
         return;
     }
+
+    last_nonfixed_same_traj_publish_stamp_ = ros::Time::now();
 
     ROS_INFO_THROTTLE(1.0,
                       "[SwarmMaster] startup-sync previewing same-traj refresh before release.");
