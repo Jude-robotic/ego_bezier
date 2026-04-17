@@ -550,7 +550,7 @@ void GenerateFixedCrossWallMap() {
   //   active door-frame gate remains only at x=+6
   //   ring/slit/ring are kept to trigger downstream formation changes
 
-  const double gap_half      = 0.65;   // half of 1.3m gap
+  const double gap_half      = 0.90;   // half of 1.3m gap
   const double frame_thick   = 0.40;   // wall thickness in X
   const double frame_height  = corridor_height;  // floor-to-ceiling
   int door_frame_count = 0;

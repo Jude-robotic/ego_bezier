@@ -143,10 +143,6 @@
 
   <arg name="online_payload_opt_enabled" default="false"/>
   <arg name="online_payload_window_segs" default="3"/>
-  <arg name="fixed_obstacle_release_require_payload_clear" default="false"/>
-       <arg name="swarm_master_refresh_on_same_leader_traj" default="false"/>
-       <arg name="swarm_master_allow_same_traj_refresh_without_fixed_schedule" default="false"/>
-       <arg name="swarm_master_nonfixed_same_traj_refresh_interval" default="0.0"/>
 
   <!-- ── 运行时编队切换（Program A：近似一字形；Program B：紧凑 V 形）── -->
   <arg name="formation_mode_topic" default="/swarm/formation_mode"/>
@@ -312,14 +308,8 @@
          value="$(arg online_payload_opt_enabled)" type="bool"/>
   <param name="/swarm_master_node/swarm_master/online_payload_window_segs"
          value="$(arg online_payload_window_segs)"/>
-  <param name="/swarm_master_node/swarm_master/fixed_obstacle_release_require_payload_clear"
-         value="$(arg fixed_obstacle_release_require_payload_clear)" type="bool"/>
   <param name="/swarm_master_node/swarm_master/refresh_guidance_on_same_leader_traj"
-         value="$(arg swarm_master_refresh_on_same_leader_traj)" type="bool"/>
-  <param name="/swarm_master_node/swarm_master/allow_same_traj_refresh_without_fixed_schedule"
-         value="$(arg swarm_master_allow_same_traj_refresh_without_fixed_schedule)" type="bool"/>
-  <param name="/swarm_master_node/swarm_master/nonfixed_same_traj_refresh_interval"
-         value="$(arg swarm_master_nonfixed_same_traj_refresh_interval)"/>
+         value="false" type="bool"/>
   <param name="/swarm_master_node/swarm_master/startup_sync_enabled"
          value="$(arg startup_sync_enabled)" type="bool"/>
   <param name="/swarm_master_node/swarm_master/startup_sync_release_topic"
@@ -363,14 +353,8 @@
            value="$(arg online_payload_opt_enabled)" type="bool"/>
     <param name="swarm_master/online_payload_window_segs"
            value="$(arg online_payload_window_segs)"/>
-    <param name="swarm_master/fixed_obstacle_release_require_payload_clear"
-           value="$(arg fixed_obstacle_release_require_payload_clear)" type="bool"/>
     <param name="swarm_master/refresh_guidance_on_same_leader_traj"
-           value="$(arg swarm_master_refresh_on_same_leader_traj)" type="bool"/>
-    <param name="swarm_master/allow_same_traj_refresh_without_fixed_schedule"
-           value="$(arg swarm_master_allow_same_traj_refresh_without_fixed_schedule)" type="bool"/>
-    <param name="swarm_master/nonfixed_same_traj_refresh_interval"
-           value="$(arg swarm_master_nonfixed_same_traj_refresh_interval)"/>
+           value="false" type="bool"/>
     <param name="swarm_master/startup_sync_enabled"
            value="$(arg startup_sync_enabled)" type="bool"/>
     <param name="swarm_master/startup_sync_release_topic"
