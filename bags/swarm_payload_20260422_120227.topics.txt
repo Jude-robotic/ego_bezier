@@ -1,0 +1,45 @@
+# scene=payload
+# profile=full
+# generated_at=2026-04-22T12:02:27+00:00
+# chain=leader_planner -> swarm_master -> program_* -> guidance_mux -> followers -> visualizers
+/tf
+/tf_static
+/move_base_simple/goal
+/traj_start_trigger
+/swarm/traj_start_trigger_gated
+/swarm/preflight/ok
+/swarm/formation_mode
+/swarm/startup_sync/release
+/swarm/agent_1/startup_ready
+/swarm/agent_2/startup_ready
+/visual_slam/odom
+/planning/bezier
+/planning/pos_cmd
+/swarm/leader/corrected_bezier
+/swarm/master/agent_1/guidance_bezier
+/swarm/master/agent_2/guidance_bezier
+/swarm/program_ring/agent_1/guidance_bezier
+/swarm/program_ring/agent_2/guidance_bezier
+/swarm/program_narrow/agent_1/guidance_bezier
+/swarm/program_narrow/agent_2/guidance_bezier
+/swarm/program_door/agent_1/guidance_bezier
+/swarm/program_door/agent_2/guidance_bezier
+/swarm/program_slit/agent_1/guidance_bezier
+/swarm/program_slit/agent_2/guidance_bezier
+/swarm/agent_1/guidance_bezier
+/swarm/agent_2/guidance_bezier
+/swarm/agent_1/state
+/swarm/agent_2/state
+/uav1/odom
+/uav2/odom
+/uav1/planning/bezier
+/uav2/planning/bezier
+/uav1/planning/pos_cmd
+/uav2/planning/pos_cmd
+/swarm/comm/markers
+/swarm/guidance_viz/markers
+/swarm/payload_viz/markers
+/pcl_render_node/camera_pose
+/map_generator/global_cloud
+/pcl_render_node/cloud
+/pcl_render_node/depth

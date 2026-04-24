@@ -157,19 +157,33 @@ add_executable(swarm_guidance_mux_node
 target_link_libraries(swarm_guidance_mux_node ${catkin_LIBRARIES})
 add_dependencies(swarm_guidance_mux_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
-# Program A: runtime approximate line-formation guidance generator
-add_executable(swarm_program_a_node
-  src/swarm_program_a_node.cpp
+# Program Ring: runtime approximate line-formation guidance generator
+add_executable(swarm_program_ring_node
+  src/swarm_program_ring_node.cpp
 )
-target_link_libraries(swarm_program_a_node ${catkin_LIBRARIES})
-add_dependencies(swarm_program_a_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+target_link_libraries(swarm_program_ring_node ${catkin_LIBRARIES})
+add_dependencies(swarm_program_ring_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
-# Program B: runtime compact V-formation guidance generator
-add_executable(swarm_program_b_node
-  src/swarm_program_b_node.cpp
+# Program Narrow: runtime compact V-formation guidance generator
+add_executable(swarm_program_narrow_node
+  src/swarm_program_narrow_node.cpp
 )
-target_link_libraries(swarm_program_b_node ${catkin_LIBRARIES})
-add_dependencies(swarm_program_b_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+target_link_libraries(swarm_program_narrow_node ${catkin_LIBRARIES})
+add_dependencies(swarm_program_narrow_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Program Door: runtime door-frame passing guidance generator
+add_executable(swarm_program_door_node
+  src/swarm_program_door_node.cpp
+)
+target_link_libraries(swarm_program_door_node ${catkin_LIBRARIES})
+add_dependencies(swarm_program_door_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+
+# Program Slit: runtime slit-passing guidance generator with rope feasibility clamp
+add_executable(swarm_program_slit_node
+  src/swarm_program_slit_node.cpp
+)
+target_link_libraries(swarm_program_slit_node ${catkin_LIBRARIES} bezier_opt)
+add_dependencies(swarm_program_slit_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
 # Swarm payload visualization node (actual/planned payload center and ropes)
 add_executable(swarm_payload_visualizer_node

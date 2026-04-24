@@ -157,22 +157,47 @@
   <!-- ── 运行时编队切换（参考 swarm_payload.launch 架构）── -->
   <arg name="formation_mode_topic" default="/swarm/formation_mode"/>
   <arg name="swarm_master_guidance_topic_template" default="/swarm/master/agent_{id}/guidance_bezier"/>
-  <arg name="program_a_guidance_topic_template" default="/swarm/program_a/agent_{id}/guidance_bezier"/>
-  <arg name="program_a_line_spacing" default="1.0"/>
-  <arg name="program_a_transition_duration" default="2.4"/>
-  <arg name="program_a_agent2_phase_delay" default="0.35"/>
-  <arg name="program_a_same_traj_start_delay" default="0.03"/>
-  <arg name="program_a_refresh_min_interval" default="0.20"/>
-  <arg name="program_a_refresh_min_alpha_delta" default="0.08"/>
-  <arg name="program_a_publish_rate" default="10.0"/>
-  <arg name="program_b_guidance_topic_template" default="/swarm/program_b/agent_{id}/guidance_bezier"/>
-  <arg name="program_b_compact_spacing" default="-1.0"/>
-  <arg name="program_b_min_pair_distance" default="-1.0"/>
-  <arg name="program_b_transition_duration" default="2.4"/>
-  <arg name="program_b_same_traj_start_delay" default="0.03"/>
-  <arg name="program_b_refresh_min_interval" default="0.20"/>
-  <arg name="program_b_refresh_min_alpha_delta" default="0.08"/>
-  <arg name="program_b_publish_rate" default="10.0"/>
+  <arg name="program_ring_guidance_topic_template" default="/swarm/program_ring/agent_{id}/guidance_bezier"/>
+  <arg name="program_ring_line_spacing" default="1.0"/>
+  <arg name="program_ring_compact_lateral_scale" default="0.35"/>
+  <arg name="program_ring_transition_duration" default="2.4"/>
+  <arg name="program_ring_agent2_phase_delay" default="0.35"/>
+  <arg name="program_ring_same_traj_start_delay" default="0.03"/>
+  <arg name="program_ring_refresh_min_interval" default="0.20"/>
+  <arg name="program_ring_refresh_min_alpha_delta" default="0.08"/>
+  <arg name="program_ring_publish_rate" default="10.0"/>
+  <arg name="program_narrow_guidance_topic_template" default="/swarm/program_narrow/agent_{id}/guidance_bezier"/>
+  <arg name="program_narrow_compact_spacing" default="-1.0"/>
+  <arg name="program_narrow_min_pair_distance" default="-1.0"/>
+  <arg name="program_narrow_transition_duration" default="2.4"/>
+  <arg name="program_narrow_same_traj_start_delay" default="0.03"/>
+  <arg name="program_narrow_refresh_min_interval" default="0.20"/>
+  <arg name="program_narrow_refresh_min_alpha_delta" default="0.08"/>
+  <arg name="program_narrow_publish_rate" default="10.0"/>
+  <arg name="program_door_guidance_topic_template" default="/swarm/program_door/agent_{id}/guidance_bezier"/>
+  <arg name="program_door_roll_angle_deg" default="55.0"/>
+  <arg name="program_door_z_floor_margin" default="$(arg payload_template_rope_margin)"/>
+  <arg name="program_door_z_ceiling_margin" default="$(arg payload_template_rope_margin)"/>
+  <arg name="program_door_pair_extra_margin" default="0.0"/>
+  <arg name="program_door_transition_duration" default="2.4"/>
+  <arg name="program_door_same_traj_start_delay" default="0.03"/>
+  <arg name="program_door_refresh_min_interval" default="0.20"/>
+  <arg name="program_door_refresh_min_alpha_delta" default="0.08"/>
+  <arg name="program_door_publish_rate" default="10.0"/>
+  <arg name="program_slit_guidance_topic_template" default="/swarm/program_slit/agent_{id}/guidance_bezier"/>
+  <arg name="program_slit_spread_factor" default="2.5"/>
+  <arg name="program_slit_min_spread_factor" default="1.0"/>
+  <arg name="program_slit_enforce_rope_feasibility" default="true"/>
+  <arg name="program_slit_extra_rope_margin" default="$(arg payload_template_rope_margin)"/>
+  <arg name="program_slit_transition_duration" default="1.6"/>
+  <arg name="program_slit_same_traj_start_delay" default="0.03"/>
+  <arg name="program_slit_refresh_min_interval" default="0.20"/>
+  <arg name="program_slit_refresh_min_alpha_delta" default="0.08"/>
+  <arg name="program_slit_publish_rate" default="10.0"/>
+  <arg name="program_payload_constraint_rope_margin" default="0.0"/>
+  <arg name="program_payload_constraint_area_margin" default="0.0"/>
+  <arg name="program_payload_constraint_pair_margin" default="0.0"/>
+  <arg name="program_payload_constraint_samples_per_seg" default="5"/>
 
   <!-- ── 飞前检查（仿真默认关闭硬阻断）── -->
   <arg name="enable_preflight_check" default="false"/>
@@ -409,15 +434,19 @@
 
   <!-- 运行时编队切换链路：
        1. swarm_master 发布 normal guidance 到 /swarm/master/agent_{id}/guidance_bezier
-       2. Program A 生成近似一字形 guidance 到 /swarm/program_a/agent_{id}/guidance_bezier
-       3. Program B 生成紧凑 V 形 guidance 到 /swarm/program_b/agent_{id}/guidance_bezier
-       4. guidance mux 按 /swarm/formation_mode 选择最终输出到 /swarm/agent_{id}/guidance_bezier
+       2. Program Ring 生成近似一字形 guidance 到 /swarm/program_ring/agent_{id}/guidance_bezier
+       3. Program Narrow 生成紧凑 V 形 guidance 到 /swarm/program_narrow/agent_{id}/guidance_bezier
+      4. Program Door 生成门框通过 guidance 到 /swarm/program_door/agent_{id}/guidance_bezier
+      5. Program Slit 生成低矮狭缝通过 guidance 到 /swarm/program_slit/agent_{id}/guidance_bezier
+      6. guidance mux 按 /swarm/formation_mode 选择最终输出到 /swarm/agent_{id}/guidance_bezier
        终端切换示例：
-       rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'program_a'"
-       rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'program_b'"
+       rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'program_ring'"
+       rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'program_narrow'"
+      rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'program_door'"
+      rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'program_slit'"
        rostopic pub -1 $(arg formation_mode_topic) std_msgs/String "data: 'normal'" -->
-  <node pkg="ego_planner" type="swarm_program_a_node"
-        name="swarm_program_a_node" output="screen">
+  <node pkg="ego_planner" type="swarm_program_ring_node"
+        name="swarm_program_ring_node" output="screen">
     <rosparam param="agent_ids">[1, 2]</rosparam>
     <param name="mode_topic" value="$(arg formation_mode_topic)"/>
     <param name="leader_guidance_topic" value="$(arg leader_corrected_topic)"/>
@@ -425,18 +454,23 @@
     <param name="normal_guidance_topic_template"
            value="$(arg swarm_master_guidance_topic_template)"/>
     <param name="output_guidance_topic_template"
-           value="$(arg program_a_guidance_topic_template)"/>
-    <param name="line_spacing" value="$(arg program_a_line_spacing)"/>
-    <param name="transition_duration" value="$(arg program_a_transition_duration)"/>
-    <param name="agent2_phase_delay" value="$(arg program_a_agent2_phase_delay)"/>
-    <param name="same_traj_start_delay" value="$(arg program_a_same_traj_start_delay)"/>
-    <param name="refresh_min_interval" value="$(arg program_a_refresh_min_interval)"/>
-    <param name="refresh_min_alpha_delta" value="$(arg program_a_refresh_min_alpha_delta)"/>
-    <param name="publish_rate" value="$(arg program_a_publish_rate)"/>
+           value="$(arg program_ring_guidance_topic_template)"/>
+    <param name="line_spacing" value="$(arg program_ring_line_spacing)"/>
+    <param name="compact_lateral_scale" value="$(arg program_ring_compact_lateral_scale)"/>
+    <param name="payload_constraint_rope_margin" value="$(arg program_payload_constraint_rope_margin)"/>
+    <param name="payload_constraint_area_margin" value="$(arg program_payload_constraint_area_margin)"/>
+    <param name="payload_constraint_pair_margin" value="$(arg program_payload_constraint_pair_margin)"/>
+    <param name="payload_constraint_samples_per_seg" value="$(arg program_payload_constraint_samples_per_seg)"/>
+    <param name="transition_duration" value="$(arg program_ring_transition_duration)"/>
+    <param name="agent2_phase_delay" value="$(arg program_ring_agent2_phase_delay)"/>
+    <param name="same_traj_start_delay" value="$(arg program_ring_same_traj_start_delay)"/>
+    <param name="refresh_min_interval" value="$(arg program_ring_refresh_min_interval)"/>
+    <param name="refresh_min_alpha_delta" value="$(arg program_ring_refresh_min_alpha_delta)"/>
+    <param name="publish_rate" value="$(arg program_ring_publish_rate)"/>
   </node>
 
-  <node pkg="ego_planner" type="swarm_program_b_node"
-        name="swarm_program_b_node" output="screen">
+  <node pkg="ego_planner" type="swarm_program_narrow_node"
+        name="swarm_program_narrow_node" output="screen">
     <rosparam param="agent_ids">[1, 2]</rosparam>
     <param name="mode_topic" value="$(arg formation_mode_topic)"/>
     <param name="leader_guidance_topic" value="$(arg leader_corrected_topic)"/>
@@ -444,15 +478,67 @@
     <param name="normal_guidance_topic_template"
            value="$(arg swarm_master_guidance_topic_template)"/>
     <param name="output_guidance_topic_template"
-           value="$(arg program_b_guidance_topic_template)"/>
-    <param name="compact_spacing" value="$(arg program_b_compact_spacing)"/>
-    <param name="min_pair_distance" value="$(arg program_b_min_pair_distance)"/>
-    <param name="transition_duration" value="$(arg program_b_transition_duration)"/>
-    <param name="same_traj_start_delay" value="$(arg program_b_same_traj_start_delay)"/>
-    <param name="refresh_min_interval" value="$(arg program_b_refresh_min_interval)"/>
-    <param name="refresh_min_alpha_delta" value="$(arg program_b_refresh_min_alpha_delta)"/>
-    <param name="publish_rate" value="$(arg program_b_publish_rate)"/>
+           value="$(arg program_narrow_guidance_topic_template)"/>
+    <param name="compact_spacing" value="$(arg program_narrow_compact_spacing)"/>
+    <param name="min_pair_distance" value="$(arg program_narrow_min_pair_distance)"/>
+    <param name="transition_duration" value="$(arg program_narrow_transition_duration)"/>
+    <param name="same_traj_start_delay" value="$(arg program_narrow_same_traj_start_delay)"/>
+    <param name="refresh_min_interval" value="$(arg program_narrow_refresh_min_interval)"/>
+    <param name="refresh_min_alpha_delta" value="$(arg program_narrow_refresh_min_alpha_delta)"/>
+    <param name="publish_rate" value="$(arg program_narrow_publish_rate)"/>
   </node>
+
+      <node pkg="ego_planner" type="swarm_program_door_node"
+       name="swarm_program_door_node" output="screen">
+        <rosparam param="agent_ids">[1, 2]</rosparam>
+        <param name="mode_topic" value="$(arg formation_mode_topic)"/>
+        <param name="leader_guidance_topic" value="$(arg leader_corrected_topic)"/>
+        <param name="leader_state_topic" value="$(arg odom_topic)"/>
+        <param name="normal_guidance_topic_template"
+          value="$(arg swarm_master_guidance_topic_template)"/>
+        <param name="output_guidance_topic_template"
+          value="$(arg program_door_guidance_topic_template)"/>
+        <param name="door_roll_angle_deg" value="$(arg program_door_roll_angle_deg)"/>
+        <param name="door_z_floor_margin" value="$(arg program_door_z_floor_margin)"/>
+        <param name="door_z_ceiling_margin" value="$(arg program_door_z_ceiling_margin)"/>
+        <param name="door_pair_extra_margin" value="$(arg program_door_pair_extra_margin)"/>
+        <param name="payload_constraint_rope_margin" value="$(arg program_payload_constraint_rope_margin)"/>
+        <param name="payload_constraint_area_margin" value="$(arg program_payload_constraint_area_margin)"/>
+        <param name="payload_constraint_pair_margin" value="$(arg program_payload_constraint_pair_margin)"/>
+        <param name="payload_constraint_samples_per_seg" value="$(arg program_payload_constraint_samples_per_seg)"/>
+        <param name="transition_duration" value="$(arg program_door_transition_duration)"/>
+        <param name="same_traj_start_delay" value="$(arg program_door_same_traj_start_delay)"/>
+        <param name="refresh_min_interval" value="$(arg program_door_refresh_min_interval)"/>
+        <param name="refresh_min_alpha_delta" value="$(arg program_door_refresh_min_alpha_delta)"/>
+        <param name="publish_rate" value="$(arg program_door_publish_rate)"/>
+      </node>
+
+      <node pkg="ego_planner" type="swarm_program_slit_node"
+       name="swarm_program_slit_node" output="screen">
+        <rosparam param="agent_ids">[1, 2]</rosparam>
+        <param name="mode_topic" value="$(arg formation_mode_topic)"/>
+        <param name="leader_guidance_topic" value="$(arg leader_corrected_topic)"/>
+        <param name="leader_state_topic" value="$(arg odom_topic)"/>
+        <param name="normal_guidance_topic_template"
+          value="$(arg swarm_master_guidance_topic_template)"/>
+        <param name="output_guidance_topic_template"
+          value="$(arg program_slit_guidance_topic_template)"/>
+        <param name="slit_spread_factor" value="$(arg program_slit_spread_factor)"/>
+        <param name="slit_min_spread_factor" value="$(arg program_slit_min_spread_factor)"/>
+        <param name="slit_enforce_rope_feasibility" value="$(arg program_slit_enforce_rope_feasibility)"/>
+        <param name="payload_rope_length" value="$(arg payload_rope_length)"/>
+        <param name="payload_template_rope_margin" value="$(arg payload_template_rope_margin)"/>
+        <param name="slit_extra_rope_margin" value="$(arg program_slit_extra_rope_margin)"/>
+        <param name="payload_constraint_rope_margin" value="$(arg program_payload_constraint_rope_margin)"/>
+        <param name="payload_constraint_area_margin" value="$(arg program_payload_constraint_area_margin)"/>
+        <param name="payload_constraint_pair_margin" value="$(arg program_payload_constraint_pair_margin)"/>
+        <param name="payload_constraint_samples_per_seg" value="$(arg program_payload_constraint_samples_per_seg)"/>
+        <param name="transition_duration" value="$(arg program_slit_transition_duration)"/>
+        <param name="same_traj_start_delay" value="$(arg program_slit_same_traj_start_delay)"/>
+        <param name="refresh_min_interval" value="$(arg program_slit_refresh_min_interval)"/>
+        <param name="refresh_min_alpha_delta" value="$(arg program_slit_refresh_min_alpha_delta)"/>
+        <param name="publish_rate" value="$(arg program_slit_publish_rate)"/>
+      </node>
 
   <node pkg="ego_planner" type="swarm_guidance_mux_node"
         name="swarm_guidance_mux_node" output="screen">
@@ -460,10 +546,14 @@
     <param name="mode_topic" value="$(arg formation_mode_topic)"/>
     <param name="normal_guidance_topic_template"
            value="$(arg swarm_master_guidance_topic_template)"/>
-    <param name="program_a_guidance_topic_template"
-           value="$(arg program_a_guidance_topic_template)"/>
-    <param name="program_b_guidance_topic_template"
-           value="$(arg program_b_guidance_topic_template)"/>
+    <param name="program_ring_guidance_topic_template"
+           value="$(arg program_ring_guidance_topic_template)"/>
+    <param name="program_narrow_guidance_topic_template"
+           value="$(arg program_narrow_guidance_topic_template)"/>
+        <param name="program_door_guidance_topic_template"
+          value="$(arg program_door_guidance_topic_template)"/>
+        <param name="program_slit_guidance_topic_template"
+          value="$(arg program_slit_guidance_topic_template)"/>
     <param name="output_guidance_topic_template" value="/swarm/agent_{id}/guidance_bezier"/>
   </node>
 

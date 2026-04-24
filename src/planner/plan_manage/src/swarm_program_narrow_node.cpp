@@ -26,11 +26,34 @@ std::string toLowerCopy(std::string text)
   return text;
 }
 
-bool useProgramB(const std::string &mode_raw)
+std::string normalizeModeToken(std::string mode_raw)
 {
-  const std::string mode = toLowerCopy(mode_raw);
-  return mode == "program_b" || mode == "b" || mode == "compact_v" ||
-         mode == "tight_v" || mode == "compact";
+  const auto not_space = [](unsigned char c) {
+    return !std::isspace(c);
+  };
+
+  const auto begin_it = std::find_if(mode_raw.begin(), mode_raw.end(), not_space);
+  const auto end_it = std::find_if(mode_raw.rbegin(), mode_raw.rend(), not_space).base();
+  if (begin_it >= end_it)
+    return std::string();
+
+  std::string mode(begin_it, end_it);
+  if (mode.size() >= 2)
+  {
+    const char first = mode.front();
+    const char last = mode.back();
+    if ((first == '\'' && last == '\'') || (first == '"' && last == '"'))
+      mode = mode.substr(1, mode.size() - 2);
+  }
+
+  return toLowerCopy(mode);
+}
+
+bool useProgramNarrow(const std::string &mode_raw)
+{
+  const std::string mode = normalizeModeToken(mode_raw);
+  return mode == "program_narrow" || mode == "narrow" || mode == "narrow_v" ||
+         mode == "tight_narrow" || mode == "compact";
 }
 
 double clamp01(const double value)
@@ -125,7 +148,7 @@ struct PublishRecord
   ros::Time stamp;
 };
 
-class SwarmProgramB
+class SwarmProgramNarrow
 {
 public:
   void init()
@@ -141,7 +164,7 @@ public:
     pnh.param<std::string>("normal_guidance_topic_template", normal_guidance_topic_template_,
                            std::string("/swarm/master/agent_{id}/guidance_bezier"));
     pnh.param<std::string>("output_guidance_topic_template", output_guidance_topic_template_,
-                           std::string("/swarm/program_b/agent_{id}/guidance_bezier"));
+                           std::string("/swarm/program_narrow/agent_{id}/guidance_bezier"));
     pnh.param("transition_duration", transition_duration_, 2.4);
     pnh.param("same_traj_start_delay", same_traj_start_delay_, 0.03);
     pnh.param("refresh_min_interval", refresh_min_interval_, 0.20);
@@ -174,16 +197,16 @@ public:
     {
       agent_ids_.push_back(1);
       agent_ids_.push_back(2);
-      ROS_WARN("[ProgramB] agent_ids not provided, fallback to [1, 2].");
+      ROS_WARN("[ProgramNarrow] agent_ids not provided, fallback to [1, 2].");
     }
 
     resolveCompactSpacing();
 
-    mode_sub_ = nh.subscribe(mode_topic_, 5, &SwarmProgramB::modeCallback, this);
+    mode_sub_ = nh.subscribe(mode_topic_, 5, &SwarmProgramNarrow::modeCallback, this);
     leader_guidance_sub_ = nh.subscribe(leader_guidance_topic_, 10,
-                                        &SwarmProgramB::leaderGuidanceCallback, this);
+                                        &SwarmProgramNarrow::leaderGuidanceCallback, this);
     leader_state_sub_ = nh.subscribe(leader_state_topic_, 20,
-                                     &SwarmProgramB::leaderStateCallback, this);
+                                     &SwarmProgramNarrow::leaderStateCallback, this);
 
     for (size_t i = 0; i < agent_ids_.size(); ++i)
     {
@@ -191,12 +214,12 @@ public:
       base_guidance_subs_.push_back(
           nh.subscribe<ego_planner::Bezier>(
               formatTopic(normal_guidance_topic_template_, agent_id), 10,
-              boost::bind(&SwarmProgramB::baseGuidanceCallback, this, _1, agent_id)));
+              boost::bind(&SwarmProgramNarrow::baseGuidanceCallback, this, _1, agent_id)));
       output_pubs_[agent_id] = nh.advertise<ego_planner::Bezier>(
           formatTopic(output_guidance_topic_template_, agent_id), 10);
       agent_rank_[agent_id] = static_cast<int>(i) + 1;
 
-      ROS_INFO("[ProgramB] agent=%d normal=%s output=%s rank=%d",
+      ROS_INFO("[ProgramNarrow] agent=%d normal=%s output=%s rank=%d",
                agent_id,
                formatTopic(normal_guidance_topic_template_, agent_id).c_str(),
                formatTopic(output_guidance_topic_template_, agent_id).c_str(),
@@ -204,9 +227,9 @@ public:
     }
 
     timer_ = nh.createTimer(ros::Duration(1.0 / std::max(1.0, publish_rate_)),
-                            &SwarmProgramB::timerCallback, this);
+                            &SwarmProgramNarrow::timerCallback, this);
 
-    ROS_INFO("[ProgramB] ready. mode_topic=%s compact_spacing=%.3f normal_spacing=%.3f angle=%.1fdeg pair_min=%.3f",
+    ROS_INFO("[ProgramNarrow] ready. mode_topic=%s compact_spacing=%.3f normal_spacing=%.3f angle=%.1fdeg pair_min=%.3f",
              mode_topic_.c_str(), compact_spacing_, normal_spacing_, formation_angle_deg_,
              pair_distance_min_);
   }
@@ -219,7 +242,7 @@ private:
     const double base_pair_min = std::max(safe_radius_, inter_uav_sep_min_);
     if (min_pair_distance_cmd_ > 0.0 && min_pair_distance_cmd_ + 1e-3 < base_pair_min)
     {
-      ROS_WARN("[ProgramB] min_pair_distance=%.3f is below base safety %.3f. "
+      ROS_WARN("[ProgramNarrow] min_pair_distance=%.3f is below base safety %.3f. "
                "The stricter safety threshold will be kept.",
                min_pair_distance_cmd_, base_pair_min);
     }
@@ -234,35 +257,36 @@ private:
     compact_spacing_ = (compact_spacing_cmd_ > 0.0) ? compact_spacing_cmd_ : required_spacing;
     if (compact_spacing_ < required_spacing)
     {
-      ROS_WARN("[ProgramB] compact_spacing=%.3f is below required safe spacing %.3f, clamp applied.",
+      ROS_WARN("[ProgramNarrow] compact_spacing=%.3f is below required safe spacing %.3f, clamp applied.",
                compact_spacing_, required_spacing);
       compact_spacing_ = required_spacing;
     }
 
     if (compact_spacing_ > normal_spacing_ + 1e-3 && required_spacing <= normal_spacing_ + 1e-3)
     {
-      ROS_WARN("[ProgramB] compact_spacing=%.3f is above normal spacing %.3f. "
-               "Program B keeps the tighter normal-spacing upper bound.",
+      ROS_WARN("[ProgramNarrow] compact_spacing=%.3f is above normal spacing %.3f. "
+               "Program Narrow keeps the tighter normal-spacing upper bound.",
                compact_spacing_, normal_spacing_);
       compact_spacing_ = normal_spacing_;
     }
 
     if (compact_spacing_ > normal_spacing_ + 1e-3)
     {
-      ROS_WARN("[ProgramB] computed compact spacing %.3f exceeds normal spacing %.3f. "
-               "Program B will not compress under current constraints.",
+      ROS_WARN("[ProgramNarrow] computed compact spacing %.3f exceeds normal spacing %.3f. "
+               "Program Narrow will not compress under current constraints.",
                compact_spacing_, normal_spacing_);
     }
 
-    ROS_INFO("[ProgramB] spacing resolution: safe_radius=%.3f inter_uav_sep_min=%.3f pair_min=%.3f required=%.3f final=%.3f",
+    ROS_INFO("[ProgramNarrow] spacing resolution: safe_radius=%.3f inter_uav_sep_min=%.3f pair_min=%.3f required=%.3f final=%.3f",
              safe_radius_, inter_uav_sep_min_, pair_distance_min_, required_spacing, compact_spacing_);
   }
 
   void modeCallback(const std_msgs::StringConstPtr &msg)
   {
-    target_active_ = useProgramB(msg->data);
-    ROS_INFO("[ProgramB] mode command '%s' -> target_active=%d",
-             msg->data.c_str(), static_cast<int>(target_active_));
+    const std::string normalized_mode = normalizeModeToken(msg->data);
+    target_active_ = useProgramNarrow(msg->data);
+    ROS_INFO("[ProgramNarrow] mode command raw='%s' normalized='%s' -> target_active=%d",
+             msg->data.c_str(), normalized_mode.c_str(), static_cast<int>(target_active_));
   }
 
   void leaderGuidanceCallback(const ego_planner::BezierConstPtr &msg)
@@ -336,8 +360,8 @@ private:
     return headings;
   }
 
-  Eigen::MatrixXd buildCompactVCtrl(const Eigen::MatrixXd &leader_ctrl,
-                                    const int rank) const
+  Eigen::MatrixXd buildNarrowVCtrl(const Eigen::MatrixXd &leader_ctrl,
+                                   const int rank) const
   {
     Eigen::MatrixXd compact_ctrl = leader_ctrl;
     const std::vector<Eigen::Vector3d> headings = computeHeadings(leader_ctrl);
@@ -423,7 +447,7 @@ private:
     if (base_ctrl.cols() != leader_ctrl.cols())
     {
       ROS_WARN_THROTTLE(1.0,
-                        "[ProgramB] agent=%d ctrl size mismatch: base=%d leader=%d, skip.",
+                        "[ProgramNarrow] agent=%d ctrl size mismatch: base=%d leader=%d, skip.",
                         agent_id, static_cast<int>(base_ctrl.cols()),
                         static_cast<int>(leader_ctrl.cols()));
       return;
@@ -433,7 +457,7 @@ private:
     if (!shouldPublish(agent_id, alpha, now))
       return;
 
-    const Eigen::MatrixXd compact_ctrl = buildCompactVCtrl(leader_ctrl, rank_it->second);
+    const Eigen::MatrixXd compact_ctrl = buildNarrowVCtrl(leader_ctrl, rank_it->second);
     const Eigen::MatrixXd out_ctrl =
         (1.0 - alpha) * base_ctrl + alpha * compact_ctrl;
 
@@ -462,7 +486,7 @@ private:
     record.stamp = now;
 
     ROS_INFO_THROTTLE(0.5,
-                      "[ProgramB] agent=%d publish alpha=%.2f compact_spacing=%.3f traj_id=%ld start_in=%.3f",
+                      "[ProgramNarrow] agent=%d publish alpha=%.2f compact_spacing=%.3f traj_id=%ld start_in=%.3f",
                       agent_id, alpha, compact_spacing_, static_cast<long>(out.traj_id),
                       (out.start_time - now).toSec());
   }
@@ -550,9 +574,9 @@ private:
 
 int main(int argc, char **argv)
 {
-  ros::init(argc, argv, "swarm_program_b_node");
+  ros::init(argc, argv, "swarm_program_narrow_node");
 
-  SwarmProgramB node;
+  SwarmProgramNarrow node;
   node.init();
   ros::spin();
   return 0;

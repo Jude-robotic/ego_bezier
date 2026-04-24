@@ -1,0 +1,788 @@
+#include <ego_planner/Bezier.h>
+#include <nav_msgs/Odometry.h>
+#include <ros/ros.h>
+#include <std_msgs/String.h>
+
+#include <plan_manage/payload_constraint_guard.h>
+
+#include <Eigen/Eigen>
+
+#include <algorithm>
+#include <boost/bind.hpp>
+#include <cctype>
+#include <cmath>
+#include <limits>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace
+{
+
+namespace payload_guard = ego_planner::plan_manage;
+
+constexpr double kEps = 1e-6;
+
+std::string toLowerCopy(std::string text)
+{
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return text;
+}
+
+std::string normalizeModeToken(std::string mode_raw)
+{
+  const auto not_space = [](unsigned char c) {
+    return !std::isspace(c);
+  };
+
+  const auto begin_it = std::find_if(mode_raw.begin(), mode_raw.end(), not_space);
+  const auto end_it = std::find_if(mode_raw.rbegin(), mode_raw.rend(), not_space).base();
+  if (begin_it >= end_it)
+    return std::string();
+
+  std::string mode(begin_it, end_it);
+  if (mode.size() >= 2)
+  {
+    const char first = mode.front();
+    const char last = mode.back();
+    if ((first == '\'' && last == '\'') || (first == '"' && last == '"'))
+      mode = mode.substr(1, mode.size() - 2);
+  }
+
+  return toLowerCopy(mode);
+}
+
+bool useProgramDoor(const std::string &mode_raw)
+{
+  const std::string mode = normalizeModeToken(mode_raw);
+  return mode == "program_door" || mode == "door" || mode == "door_frame";
+}
+
+double clamp01(const double value)
+{
+  return std::max(0.0, std::min(1.0, value));
+}
+
+std::string formatTopic(const std::string &topic_template, const int agent_id)
+{
+  std::string topic = topic_template;
+  const std::string key = "{id}";
+  const std::string value = std::to_string(agent_id);
+  std::string::size_type pos = 0;
+  while ((pos = topic.find(key, pos)) != std::string::npos)
+  {
+    topic.replace(pos, key.size(), value);
+    pos += value.size();
+  }
+  return topic;
+}
+
+Eigen::Vector3d normalizedOrFallback(const Eigen::Vector3d &vec,
+                                     const Eigen::Vector3d &fallback)
+{
+  const double norm = vec.norm();
+  if (norm < kEps)
+    return fallback;
+  return vec / norm;
+}
+
+void loadDoubleParam(ros::NodeHandle &pnh, ros::NodeHandle &nh,
+                     const std::string &private_key,
+                     const std::string &global_key,
+                     const double fallback,
+                     double &value)
+{
+  if (pnh.getParam(private_key, value))
+    return;
+
+  if (!global_key.empty() && nh.getParam(global_key, value))
+    return;
+
+  value = fallback;
+}
+
+Eigen::MatrixXd toCtrlPts(const ego_planner::Bezier &msg)
+{
+  Eigen::MatrixXd ctrl(3, static_cast<int>(msg.pos_pts.size()));
+  for (size_t i = 0; i < msg.pos_pts.size(); ++i)
+  {
+    ctrl(0, static_cast<int>(i)) = msg.pos_pts[i].x;
+    ctrl(1, static_cast<int>(i)) = msg.pos_pts[i].y;
+    ctrl(2, static_cast<int>(i)) = msg.pos_pts[i].z;
+  }
+  return ctrl;
+}
+
+ego_planner::Bezier buildBezierMsg(const ego_planner::Bezier &meta,
+                                   const Eigen::MatrixXd &ctrl,
+                                   const ros::Time &start_time,
+                                   const int64_t traj_id)
+{
+  ego_planner::Bezier out = meta;
+  out.start_time = start_time;
+  out.traj_id = traj_id;
+  out.pos_pts.clear();
+  out.pos_pts.reserve(static_cast<size_t>(ctrl.cols()));
+  for (int i = 0; i < ctrl.cols(); ++i)
+  {
+    geometry_msgs::Point p;
+    p.x = ctrl(0, i);
+    p.y = ctrl(1, i);
+    p.z = ctrl(2, i);
+    out.pos_pts.push_back(p);
+  }
+  return out;
+}
+
+struct CachedBezier
+{
+  ego_planner::Bezier msg;
+  bool valid{false};
+};
+
+struct PublishRecord
+{
+  int64_t leader_traj_id{-1};
+  ros::Time leader_start_time;
+  int64_t base_traj_id{-1};
+  ros::Time base_start_time;
+  double alpha{std::numeric_limits<double>::quiet_NaN()};
+  ros::Time stamp;
+};
+
+class SwarmProgramDoor
+{
+public:
+  void init()
+  {
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh("~");
+
+    pnh.param<std::string>("mode_topic", mode_topic_, std::string("/swarm/formation_mode"));
+    pnh.param<std::string>("leader_guidance_topic", leader_guidance_topic_,
+                           std::string("/swarm/leader/corrected_bezier"));
+    pnh.param<std::string>("leader_state_topic", leader_state_topic_,
+                           std::string("/visual_slam/odom"));
+    pnh.param<std::string>("normal_guidance_topic_template", normal_guidance_topic_template_,
+                           std::string("/swarm/master/agent_{id}/guidance_bezier"));
+    pnh.param<std::string>("output_guidance_topic_template", output_guidance_topic_template_,
+                           std::string("/swarm/program_door/agent_{id}/guidance_bezier"));
+
+    loadDoubleParam(pnh, nh, "formation_spacing",
+                    "/swarm_master_node/swarm_master/formation/spacing",
+                    1.6, formation_spacing_);
+    loadDoubleParam(pnh, nh, "formation_angle_deg",
+                    "/swarm_master_node/swarm_master/formation/angle_deg",
+                    35.0, formation_angle_deg_);
+    loadDoubleParam(pnh, nh, "formation_z_offset",
+                    "/swarm_master_node/swarm_master/formation/z_offset",
+                    0.0, formation_z_offset_);
+    loadDoubleParam(pnh, nh, "safe_radius",
+                    "/swarm_master_node/swarm_master/safe_radius",
+                    1.2, safe_radius_);
+	    loadDoubleParam(pnh, nh, "inter_uav_sep_min",
+	                    "/swarm_master_node/swarm_master/payload/inter_uav_sep_min",
+	                    0.8, inter_uav_sep_min_);
+	    loadDoubleParam(pnh, nh, "payload_rope_length",
+	                    "/swarm_master_node/swarm_master/payload/rope_length",
+	                    1.0, payload_rope_length_);
+	    loadDoubleParam(pnh, nh, "payload_triangle_area_min",
+	                    "/swarm_master_node/swarm_master/payload/triangle_area_min",
+	                    0.05, payload_triangle_area_min_);
+    loadDoubleParam(pnh, nh, "z_formation_min",
+                    "/swarm_master_node/swarm_master/z_formation_min",
+                    0.5, z_formation_min_);
+    loadDoubleParam(pnh, nh, "z_formation_max",
+                    "/swarm_master_node/swarm_master/z_formation_max",
+                    2.5, z_formation_max_);
+    loadDoubleParam(pnh, nh, "payload_constraint_samples_per_seg",
+                    "/swarm_master_node/swarm_master/payload/samples_per_seg",
+                    3.0, payload_constraint_samples_per_seg_double_);
+
+    pnh.param("door_roll_angle_deg", door_roll_angle_deg_, 55.0);
+    pnh.param("door_z_floor_margin", door_z_floor_margin_, 0.05);
+    pnh.param("door_z_ceiling_margin", door_z_ceiling_margin_, 0.05);
+    pnh.param("door_pair_extra_margin", door_pair_extra_margin_, 0.0);
+    pnh.param("payload_constraint_rope_margin", payload_constraint_rope_margin_, 0.0);
+    pnh.param("payload_constraint_area_margin", payload_constraint_area_margin_, 0.0);
+    pnh.param("payload_constraint_pair_margin", payload_constraint_pair_margin_, 0.0);
+    pnh.param("transition_duration", transition_duration_, 2.4);
+    pnh.param("same_traj_start_delay", same_traj_start_delay_, 0.03);
+    pnh.param("refresh_min_interval", refresh_min_interval_, 0.20);
+    pnh.param("refresh_min_alpha_delta", refresh_min_alpha_delta_, 0.08);
+    pnh.param("publish_rate", publish_rate_, 10.0);
+
+    if (!pnh.getParam("agent_ids", agent_ids_) || agent_ids_.empty())
+    {
+      agent_ids_.push_back(1);
+      agent_ids_.push_back(2);
+      ROS_WARN("[ProgramDoor] agent_ids not provided, fallback to [1, 2].");
+    }
+
+    if (z_formation_max_ <= z_formation_min_ + 1e-3)
+    {
+      ROS_WARN("[ProgramDoor] invalid z bounds [%.3f, %.3f], fallback to [0.5, 2.5].",
+               z_formation_min_, z_formation_max_);
+      z_formation_min_ = 0.5;
+      z_formation_max_ = 2.5;
+    }
+
+    if (door_pair_extra_margin_ < 0.0)
+    {
+      ROS_WARN("[ProgramDoor] door_pair_extra_margin=%.3f is negative, clamp to 0.0.",
+               door_pair_extra_margin_);
+      door_pair_extra_margin_ = 0.0;
+    }
+    payload_constraint_samples_per_seg_ =
+        std::max(1, static_cast<int>(std::round(payload_constraint_samples_per_seg_double_)));
+
+    const double angle_rad = formation_angle_deg_ * M_PI / 180.0;
+    const double pair_sep = 2.0 * std::abs(formation_spacing_ * std::sin(angle_rad));
+    const double pair_min = std::max(safe_radius_, inter_uav_sep_min_) + door_pair_extra_margin_;
+    if (pair_sep + 1e-3 < pair_min)
+    {
+      ROS_WARN("[ProgramDoor] nominal pair separation %.3f < safety threshold %.3f. "
+               "Door mode will follow provided spacing, verify formation params.",
+               pair_sep, pair_min);
+    }
+
+    mode_sub_ = nh.subscribe(mode_topic_, 5, &SwarmProgramDoor::modeCallback, this);
+    leader_guidance_sub_ = nh.subscribe(leader_guidance_topic_, 10,
+                                        &SwarmProgramDoor::leaderGuidanceCallback, this);
+    leader_state_sub_ = nh.subscribe(leader_state_topic_, 20,
+                                     &SwarmProgramDoor::leaderStateCallback, this);
+
+    for (size_t i = 0; i < agent_ids_.size(); ++i)
+    {
+      const int agent_id = agent_ids_[i];
+      base_guidance_subs_.push_back(
+          nh.subscribe<ego_planner::Bezier>(
+              formatTopic(normal_guidance_topic_template_, agent_id), 10,
+              boost::bind(&SwarmProgramDoor::baseGuidanceCallback, this, _1, agent_id)));
+      output_pubs_[agent_id] = nh.advertise<ego_planner::Bezier>(
+          formatTopic(output_guidance_topic_template_, agent_id), 10);
+      agent_rank_[agent_id] = static_cast<int>(i) + 1;
+
+      ROS_INFO("[ProgramDoor] agent=%d normal=%s output=%s rank=%d",
+               agent_id,
+               formatTopic(normal_guidance_topic_template_, agent_id).c_str(),
+               formatTopic(output_guidance_topic_template_, agent_id).c_str(),
+               agent_rank_[agent_id]);
+    }
+
+    timer_ = nh.createTimer(ros::Duration(1.0 / std::max(1.0, publish_rate_)),
+                            &SwarmProgramDoor::timerCallback, this);
+
+    ROS_INFO("[ProgramDoor] ready. mode_topic=%s roll=%.1fdeg z=[%.2f, %.2f] margins(floor=%.2f ceiling=%.2f pair_extra=%.2f guard(rope=%.3f area=%.3f pair=%.3f samples_per_seg=%d)",
+             mode_topic_.c_str(), door_roll_angle_deg_, z_formation_min_, z_formation_max_,
+             door_z_floor_margin_, door_z_ceiling_margin_, door_pair_extra_margin_,
+             payload_constraint_rope_margin_, payload_constraint_area_margin_,
+             payload_constraint_pair_margin_, payload_constraint_samples_per_seg_);
+  }
+
+private:
+  void modeCallback(const std_msgs::StringConstPtr &msg)
+  {
+    const std::string normalized_mode = normalizeModeToken(msg->data);
+    target_active_ = useProgramDoor(msg->data);
+    ROS_INFO("[ProgramDoor] mode command raw='%s' normalized='%s' -> target_active=%d",
+             msg->data.c_str(), normalized_mode.c_str(), static_cast<int>(target_active_));
+  }
+
+  void leaderGuidanceCallback(const ego_planner::BezierConstPtr &msg)
+  {
+    leader_guidance_.msg = *msg;
+    leader_guidance_.valid = true;
+    source_dirty_ = true;
+  }
+
+  void leaderStateCallback(const nav_msgs::OdometryConstPtr &msg)
+  {
+    leader_vel_(0) = msg->twist.twist.linear.x;
+    leader_vel_(1) = msg->twist.twist.linear.y;
+    leader_vel_(2) = msg->twist.twist.linear.z;
+    have_leader_state_ = true;
+  }
+
+  void baseGuidanceCallback(const ego_planner::BezierConstPtr &msg, const int agent_id)
+  {
+    base_guidance_[agent_id].msg = *msg;
+    base_guidance_[agent_id].valid = true;
+    source_dirty_ = true;
+  }
+
+  Eigen::Vector3d fallbackHeading() const
+  {
+    Eigen::Vector3d fallback = Eigen::Vector3d::UnitX();
+    if (have_leader_state_)
+    {
+      Eigen::Vector3d vel_xy = leader_vel_;
+      vel_xy.z() = 0.0;
+      if (vel_xy.norm() > 0.1)
+        fallback = vel_xy.normalized();
+    }
+    return fallback;
+  }
+
+  std::vector<Eigen::Vector3d> computeHeadings(const Eigen::MatrixXd &ctrl) const
+  {
+    const int cols = static_cast<int>(ctrl.cols());
+    std::vector<Eigen::Vector3d> headings(static_cast<size_t>(cols), fallbackHeading());
+    if (cols <= 0)
+      return headings;
+
+    for (int i = 0; i < cols; ++i)
+    {
+      const int left = std::max(0, i - 1);
+      const int right = std::min(cols - 1, i + 1);
+      Eigen::Vector3d diff = ctrl.col(right) - ctrl.col(left);
+      diff.z() = 0.0;
+      const Eigen::Vector3d fallback = (i > 0) ? headings[static_cast<size_t>(i - 1)] : fallbackHeading();
+      headings[static_cast<size_t>(i)] = normalizedOrFallback(diff, fallback);
+    }
+
+    if (cols >= 3)
+    {
+      std::vector<Eigen::Vector3d> smoothed = headings;
+      for (int i = 1; i < cols - 1; ++i)
+      {
+        Eigen::Vector3d avg =
+            headings[static_cast<size_t>(i - 1)] +
+            2.0 * headings[static_cast<size_t>(i)] +
+            headings[static_cast<size_t>(i + 1)];
+        avg.z() = 0.0;
+        smoothed[static_cast<size_t>(i)] =
+            normalizedOrFallback(avg, headings[static_cast<size_t>(i)]);
+      }
+      headings.swap(smoothed);
+    }
+
+    return headings;
+  }
+
+  void resolveRankGeometry(const int rank, double &back_dist, double &lateral_dist) const
+  {
+    const int level = std::max(1, (rank + 1) / 2);
+    const int side = (rank % 2 == 1) ? 1 : -1;
+    const double angle_rad = formation_angle_deg_ * M_PI / 180.0;
+
+    back_dist = static_cast<double>(level) * formation_spacing_ * std::cos(angle_rad);
+    lateral_dist = static_cast<double>(side * level) * formation_spacing_ * std::sin(angle_rad);
+  }
+
+  double computeBetaCap(const double leader_z, const double lateral_abs) const
+  {
+    if (lateral_abs < kEps)
+      return M_PI;
+
+    const double z_center = leader_z + formation_z_offset_;
+    const double upper_from_ceiling =
+        (z_formation_max_ - door_z_ceiling_margin_ - z_center) / lateral_abs;
+    const double upper_from_floor =
+        (z_center - (z_formation_min_ + door_z_floor_margin_)) / lateral_abs;
+
+    double sin_cap = std::min(upper_from_ceiling, upper_from_floor);
+    sin_cap = std::max(0.0, std::min(1.0, sin_cap));
+    return std::asin(sin_cap);
+  }
+
+  void buildDoorCtrl(const Eigen::MatrixXd &leader_ctrl,
+                     const int rank,
+                     const double alpha,
+                     Eigen::MatrixXd &door_ctrl) const
+  {
+    door_ctrl = leader_ctrl;
+
+    const std::vector<Eigen::Vector3d> headings = computeHeadings(leader_ctrl);
+
+    double back_dist = 0.0;
+    double lateral_dist = 0.0;
+    resolveRankGeometry(rank, back_dist, lateral_dist);
+
+    const double roll_rad = door_roll_angle_deg_ * M_PI / 180.0;
+    const double beta_req = alpha * roll_rad;
+    const double beta_req_abs = std::abs(beta_req);
+
+    int beta_z_cap_hits = 0;
+    double beta_abs_sum = 0.0;
+    for (int i = 0; i < leader_ctrl.cols(); ++i)
+    {
+      const Eigen::Vector3d &forward = headings[static_cast<size_t>(i)];
+      Eigen::Vector3d left_dir(-forward.y(), forward.x(), 0.0);
+      if (left_dir.norm() < kEps)
+        left_dir = Eigen::Vector3d::UnitY();
+      else
+        left_dir.normalize();
+
+      const double lateral_abs = std::abs(lateral_dist);
+      const double beta_cap_z = computeBetaCap(leader_ctrl(2, i), lateral_abs);
+      const double beta_abs = std::min(beta_req_abs, beta_cap_z);
+      if (beta_abs + 1e-6 < beta_req_abs)
+        ++beta_z_cap_hits;
+      beta_abs_sum += beta_abs;
+      const double beta = std::copysign(beta_abs, beta_req);
+
+      const double y = lateral_dist * std::cos(beta);
+      const double z = lateral_dist * std::sin(beta);
+      const Eigen::Vector3d door_offset =
+          -forward * back_dist +
+          left_dir * y +
+          Eigen::Vector3d(0.0, 0.0, formation_z_offset_ + z);
+      door_ctrl.col(i) = leader_ctrl.col(i) + door_offset;
+    }
+
+    if (beta_z_cap_hits > 0)
+    {
+      ROS_WARN_THROTTLE(1.0,
+                        "[ProgramDoor] beta cap active on %d/%d ctrl points due to z bounds/margins.",
+                        beta_z_cap_hits, static_cast<int>(leader_ctrl.cols()));
+    }
+
+    if (beta_req_abs > 1e-6 && leader_ctrl.cols() > 0)
+    {
+      const double beta_req_deg = beta_req_abs * 180.0 / M_PI;
+      const double beta_eff_deg =
+          (beta_abs_sum / static_cast<double>(leader_ctrl.cols())) * 180.0 / M_PI;
+      if (beta_eff_deg + 1e-3 < 0.5 * beta_req_deg)
+      {
+        ROS_WARN_THROTTLE(1.0,
+                          "[ProgramDoor] effective roll limited: requested=%.1fdeg, effective(mean)=%.1fdeg. Check z bounds/margins.",
+                          beta_req_deg, beta_eff_deg);
+      }
+    }
+  }
+
+  double agentAlpha(const int /*agent_id*/) const
+  {
+    return door_alpha_;
+  }
+
+  payload_guard::PayloadConstraintGuardParams makePayloadGuardParams() const
+  {
+    payload_guard::PayloadConstraintGuardParams params;
+    params.rope_length = payload_rope_length_;
+    params.rope_margin = payload_constraint_rope_margin_;
+    params.triangle_area_min = payload_triangle_area_min_;
+    params.area_margin = payload_constraint_area_margin_;
+    params.inter_uav_sep_min = inter_uav_sep_min_;
+    params.pair_margin = payload_constraint_pair_margin_;
+    return params;
+  }
+
+	  bool shouldPublish(const int agent_id, const double alpha,
+	                     const ros::Time &now) const
+	  {
+	    auto record_it = publish_records_.find(agent_id);
+	    if (record_it == publish_records_.end())
+	      return true;
+
+	    const PublishRecord &record = record_it->second;
+	    const auto base_it = base_guidance_.find(agent_id);
+	    if (base_it == base_guidance_.end() || !base_it->second.valid || !leader_guidance_.valid)
+	      return false;
+
+	    const bool leader_changed =
+	        record.leader_traj_id != leader_guidance_.msg.traj_id ||
+	        std::fabs((record.leader_start_time - leader_guidance_.msg.start_time).toSec()) > 1e-4;
+	    const bool base_changed =
+	        record.base_traj_id != base_it->second.msg.traj_id ||
+	        std::fabs((record.base_start_time - base_it->second.msg.start_time).toSec()) > 1e-4;
+	    if (leader_changed || base_changed)
+	      return true;
+
+	    if (!std::isfinite(record.alpha))
+	      return true;
+
+	    const bool alpha_changed = std::fabs(alpha - record.alpha) >= refresh_min_alpha_delta_;
+	    const bool interval_ready =
+	        (now - record.stamp).toSec() >= refresh_min_interval_;
+	    return alpha_changed && interval_ready;
+	  }
+
+	  void publishAgentGuidance(const int agent_id, const ros::Time &now)
+	  {
+	    const auto base_it = base_guidance_.find(agent_id);
+	    const auto pub_it = output_pubs_.find(agent_id);
+	    const auto rank_it = agent_rank_.find(agent_id);
+	    if (base_it == base_guidance_.end() || !base_it->second.valid ||
+	        pub_it == output_pubs_.end() || rank_it == agent_rank_.end() ||
+	        !leader_guidance_.valid)
+	      return;
+
+	    const ego_planner::Bezier &base_msg = base_it->second.msg;
+	    const ego_planner::Bezier &leader_msg = leader_guidance_.msg;
+	    const Eigen::MatrixXd base_ctrl = toCtrlPts(base_msg);
+	    const Eigen::MatrixXd leader_ctrl = toCtrlPts(leader_msg);
+
+	    if (base_ctrl.cols() <= 0 || leader_ctrl.cols() <= 0)
+	      return;
+
+	    if (base_ctrl.cols() != leader_ctrl.cols())
+	    {
+	      ROS_WARN_THROTTLE(1.0,
+	                        "[ProgramDoor] agent=%d ctrl size mismatch: base=%d leader=%d, skip.",
+	                        agent_id, static_cast<int>(base_ctrl.cols()),
+	                        static_cast<int>(leader_ctrl.cols()));
+	      return;
+	    }
+
+	    const double alpha = agentAlpha(agent_id);
+	    if (!shouldPublish(agent_id, alpha, now))
+	      return;
+
+      Eigen::MatrixXd door_ctrl;
+      buildDoorCtrl(leader_ctrl, rank_it->second, alpha, door_ctrl);
+
+      const Eigen::MatrixXd out_ctrl = door_ctrl;
+
+	    const auto record_it = publish_records_.find(agent_id);
+	    const bool same_leader_traj =
+	        record_it != publish_records_.end() &&
+	        record_it->second.leader_traj_id == leader_msg.traj_id &&
+	        std::fabs((record_it->second.leader_start_time - leader_msg.start_time).toSec()) < 1e-4 &&
+	        record_it->second.base_traj_id == base_msg.traj_id &&
+	        std::fabs((record_it->second.base_start_time - base_msg.start_time).toSec()) < 1e-4;
+
+	    ros::Time publish_start_time = base_msg.start_time;
+	    if (same_leader_traj && alpha > 1e-3)
+	      publish_start_time = now + ros::Duration(same_traj_start_delay_);
+
+	    ego_planner::Bezier out =
+	        buildBezierMsg(base_msg, out_ctrl, publish_start_time, ++custom_traj_id_);
+	    pub_it->second.publish(out);
+
+	    PublishRecord &record = publish_records_[agent_id];
+	    record.leader_traj_id = leader_msg.traj_id;
+	    record.leader_start_time = leader_msg.start_time;
+	    record.base_traj_id = base_msg.traj_id;
+	    record.base_start_time = base_msg.start_time;
+	    record.alpha = alpha;
+	    record.stamp = now;
+
+	    ROS_INFO_THROTTLE(0.5,
+	                      "[ProgramDoor] agent=%d publish alpha=%.2f roll=%.1fdeg traj_id=%ld start_in=%.3f",
+	                      agent_id, alpha, door_roll_angle_deg_, static_cast<long>(out.traj_id),
+	                      (out.start_time - now).toSec());
+	  }
+
+	  void publishGuardedPairGuidance(const ros::Time &now)
+	  {
+	    if (agent_ids_.size() != 2 || !leader_guidance_.valid)
+	      return;
+
+	    const int agent_id1 = agent_ids_[0];
+	    const int agent_id2 = agent_ids_[1];
+	    const auto base_it1 = base_guidance_.find(agent_id1);
+	    const auto base_it2 = base_guidance_.find(agent_id2);
+	    const auto pub_it1 = output_pubs_.find(agent_id1);
+	    const auto pub_it2 = output_pubs_.find(agent_id2);
+	    const auto rank_it1 = agent_rank_.find(agent_id1);
+	    const auto rank_it2 = agent_rank_.find(agent_id2);
+	    if (base_it1 == base_guidance_.end() || !base_it1->second.valid ||
+	        base_it2 == base_guidance_.end() || !base_it2->second.valid ||
+	        pub_it1 == output_pubs_.end() || pub_it2 == output_pubs_.end() ||
+	        rank_it1 == agent_rank_.end() || rank_it2 == agent_rank_.end())
+	      return;
+
+	    const ego_planner::Bezier &base_msg1 = base_it1->second.msg;
+	    const ego_planner::Bezier &base_msg2 = base_it2->second.msg;
+	    const ego_planner::Bezier &leader_msg = leader_guidance_.msg;
+	    const Eigen::MatrixXd base_ctrl1 = toCtrlPts(base_msg1);
+	    const Eigen::MatrixXd base_ctrl2 = toCtrlPts(base_msg2);
+	    const Eigen::MatrixXd leader_ctrl = toCtrlPts(leader_msg);
+	    if (leader_ctrl.cols() <= 0 || base_ctrl1.cols() <= 0 || base_ctrl2.cols() <= 0)
+	      return;
+
+	    if (base_ctrl1.cols() != leader_ctrl.cols() || base_ctrl2.cols() != leader_ctrl.cols())
+	    {
+	      ROS_WARN_THROTTLE(1.0,
+	                        "[ProgramDoor] guarded pair ctrl size mismatch: leader=%d base1=%d base2=%d, skip.",
+	                        static_cast<int>(leader_ctrl.cols()),
+	                        static_cast<int>(base_ctrl1.cols()),
+	                        static_cast<int>(base_ctrl2.cols()));
+	      return;
+	    }
+
+	    const double alpha1 = agentAlpha(agent_id1);
+	    const double alpha2 = agentAlpha(agent_id2);
+	    if (!shouldPublish(agent_id1, alpha1, now) && !shouldPublish(agent_id2, alpha2, now))
+	      return;
+
+      Eigen::MatrixXd door_ctrl1;
+      Eigen::MatrixXd door_ctrl2;
+      buildDoorCtrl(leader_ctrl, rank_it1->second, alpha1, door_ctrl1);
+      buildDoorCtrl(leader_ctrl, rank_it2->second, alpha2, door_ctrl2);
+
+      const auto guard_params = makePayloadGuardParams();
+      const auto guard_result = payload_guard::projectPayloadConstraintTrajectoryBlend(
+          leader_ctrl, base_ctrl1, base_ctrl2, door_ctrl1, door_ctrl2,
+          leader_msg.segment_durations,
+          leader_msg.order > 0 ? leader_msg.order : 3,
+          guard_params, payload_constraint_samples_per_seg_);
+
+      const Eigen::MatrixXd out_ctrl1 =
+          base_ctrl1 + guard_result.blend * (door_ctrl1 - base_ctrl1);
+      const Eigen::MatrixXd out_ctrl2 =
+          base_ctrl2 + guard_result.blend * (door_ctrl2 - base_ctrl2);
+
+      if (guard_result.blend + 1e-4 < 1.0)
+      {
+        ROS_WARN_THROTTLE(1.0,
+                          "[ProgramDoor] payload guard limited trajectory blend to %.2f (R_max=%.3f, A_min=%.3f, pair_min=%.3f, samples=%d).",
+                          guard_result.blend,
+                          guard_result.trajectory.max_circumradius,
+                          guard_result.trajectory.min_area,
+                          guard_result.trajectory.min_pair_distance,
+                          guard_result.trajectory.sample_count);
+      }
+      if (!guard_result.trajectory.valid)
+      {
+        ROS_ERROR_THROTTLE(1.0,
+                           "[ProgramDoor] payload guard could not find a feasible trajectory blend; fallback stays at base guidance there.");
+      }
+
+	    auto publish_one = [&](const int agent_id,
+	                           const double alpha,
+	                           const ego_planner::Bezier &base_msg,
+	                           const Eigen::MatrixXd &out_ctrl,
+	                           ros::Publisher &pub) {
+	      const auto record_it = publish_records_.find(agent_id);
+	      const bool same_leader_traj =
+	          record_it != publish_records_.end() &&
+	          record_it->second.leader_traj_id == leader_msg.traj_id &&
+	          std::fabs((record_it->second.leader_start_time - leader_msg.start_time).toSec()) < 1e-4 &&
+	          record_it->second.base_traj_id == base_msg.traj_id &&
+	          std::fabs((record_it->second.base_start_time - base_msg.start_time).toSec()) < 1e-4;
+
+	      ros::Time publish_start_time = base_msg.start_time;
+	      if (same_leader_traj && alpha > 1e-3)
+	        publish_start_time = now + ros::Duration(same_traj_start_delay_);
+
+	      ego_planner::Bezier out =
+	          buildBezierMsg(base_msg, out_ctrl, publish_start_time, ++custom_traj_id_);
+	      pub.publish(out);
+
+	      PublishRecord &record = publish_records_[agent_id];
+	      record.leader_traj_id = leader_msg.traj_id;
+	      record.leader_start_time = leader_msg.start_time;
+	      record.base_traj_id = base_msg.traj_id;
+	      record.base_start_time = base_msg.start_time;
+	      record.alpha = alpha;
+	      record.stamp = now;
+
+	      ROS_INFO_THROTTLE(0.5,
+	                        "[ProgramDoor] agent=%d publish alpha=%.2f roll=%.1fdeg traj_id=%ld start_in=%.3f",
+	                        agent_id, alpha, door_roll_angle_deg_, static_cast<long>(out.traj_id),
+	                        (out.start_time - now).toSec());
+	    };
+
+	    publish_one(agent_id1, alpha1, base_msg1, out_ctrl1, pub_it1->second);
+	    publish_one(agent_id2, alpha2, base_msg2, out_ctrl2, pub_it2->second);
+	  }
+
+  void timerCallback(const ros::TimerEvent &event)
+  {
+    const ros::Time now = event.current_real;
+    if (!have_timer_stamp_)
+    {
+      last_timer_stamp_ = now;
+      have_timer_stamp_ = true;
+    }
+
+    const double dt = std::max(0.0, (now - last_timer_stamp_).toSec());
+    last_timer_stamp_ = now;
+
+    const double old_alpha = door_alpha_;
+    if (target_active_)
+      door_alpha_ = clamp01(door_alpha_ + dt / std::max(1e-3, transition_duration_));
+    else
+      door_alpha_ = clamp01(door_alpha_ - dt / std::max(1e-3, transition_duration_));
+
+    const bool alpha_moved = std::fabs(door_alpha_ - old_alpha) > 1e-4;
+    if (!leader_guidance_.valid)
+      return;
+
+    if (!source_dirty_ && !alpha_moved)
+      return;
+
+    if (agent_ids_.size() == 2)
+      publishGuardedPairGuidance(now);
+    else
+    {
+      for (const int agent_id : agent_ids_)
+        publishAgentGuidance(agent_id, now);
+    }
+
+    source_dirty_ = false;
+  }
+
+private:
+  std::vector<int> agent_ids_;
+  std::unordered_map<int, int> agent_rank_;
+  std::unordered_map<int, CachedBezier> base_guidance_;
+  CachedBezier leader_guidance_;
+  std::unordered_map<int, ros::Publisher> output_pubs_;
+  std::unordered_map<int, PublishRecord> publish_records_;
+
+  std::string mode_topic_;
+  std::string leader_guidance_topic_;
+  std::string leader_state_topic_;
+  std::string normal_guidance_topic_template_;
+  std::string output_guidance_topic_template_;
+
+  double formation_spacing_{1.6};
+  double formation_angle_deg_{35.0};
+	  double formation_z_offset_{0.0};
+	  double safe_radius_{1.2};
+	  double inter_uav_sep_min_{0.8};
+	  double payload_rope_length_{1.0};
+	  double payload_triangle_area_min_{0.05};
+	  double z_formation_min_{0.5};
+	  double z_formation_max_{2.5};
+
+	  double door_roll_angle_deg_{55.0};
+	  double door_z_floor_margin_{0.05};
+  double door_z_ceiling_margin_{0.05};
+  double door_pair_extra_margin_{0.0};
+  double payload_constraint_rope_margin_{0.0};
+  double payload_constraint_area_margin_{0.0};
+  double payload_constraint_pair_margin_{0.0};
+  double payload_constraint_samples_per_seg_double_{3.0};
+  int payload_constraint_samples_per_seg_{3};
+
+  double transition_duration_{2.4};
+  double same_traj_start_delay_{0.03};
+  double refresh_min_interval_{0.20};
+  double refresh_min_alpha_delta_{0.08};
+  double publish_rate_{10.0};
+
+  bool target_active_{false};
+  bool source_dirty_{false};
+  double door_alpha_{0.0};
+  int64_t custom_traj_id_{300000};
+
+  bool have_timer_stamp_{false};
+  ros::Time last_timer_stamp_;
+
+  bool have_leader_state_{false};
+  Eigen::Vector3d leader_vel_{Eigen::Vector3d::Zero()};
+
+  ros::Subscriber mode_sub_;
+  ros::Subscriber leader_guidance_sub_;
+  ros::Subscriber leader_state_sub_;
+  std::vector<ros::Subscriber> base_guidance_subs_;
+  ros::Timer timer_;
+};
+
+}  // namespace
+
+int main(int argc, char **argv)
+{
+  ros::init(argc, argv, "swarm_program_door_node");
+
+  SwarmProgramDoor node;
+  node.init();
+  ros::spin();
+  return 0;
+}
