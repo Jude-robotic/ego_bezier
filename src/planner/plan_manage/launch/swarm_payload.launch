@@ -220,7 +220,7 @@
     <arg name="planning_horizon" value="7.5"/>
 
     <!-- 飞行模式：2 = 全局航点自动飞行 -->
-    <arg name="flight_type" value="2"/>
+    <arg name="flight_type" value="1"/>
     <arg name="use_mandatory_waypoints" value="$(arg leader_use_mandatory_waypoints)"/>
     <arg name="local_frame_enable" value="$(arg leader_local_frame_enable)"/>
     <arg name="local_frame_auto_update" value="$(arg leader_local_frame_auto_update)"/>
